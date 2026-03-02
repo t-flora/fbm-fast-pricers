@@ -26,6 +26,44 @@ DEFAULT_FILE = os.path.join(RAW_DIR, "oxfordmanrealizedvolatilityindices.csv")
 DATA_URL = "https://realized.oxford-man.ox.ac.uk/data/download"
 
 
+def load_yfinance_rv(ticker: str = "^GSPC", start: str = "2000-01-01",
+                     end: str = "2024-01-01", window: int = 5) -> pd.Series:
+    """
+    Compute proxy realized variance from non-overlapping window sums of squared returns.
+
+    LIMITATION: Intraday (5-min) data is needed for reliable H estimation.
+    Oxford-Man's 5-min RV gives H ≈ 0.10 for SPX with R² > 0.97.
+    Daily squared returns are chi-squared(1) noisy; non-overlapping window RV
+    (window=5 ~ 1 week) reduces noise while preserving temporal structure, but
+    yields a rough estimate only.  Treat yfinance-calibrated H as approximate.
+
+    Reference: Gatheral, Jaisson & Rosenbaum (2014) establish H ≈ 0.10 using
+    Oxford-Man 5-min realized variance.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        raise ImportError("yfinance is required: uv add yfinance")
+
+    raw = yf.download(ticker, start=start, end=end, progress=False)
+    # Handle multi-level columns from newer yfinance versions
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+    close = raw["Close"].dropna()
+    log_ret = np.log(close / close.shift(1)).dropna()
+    rv_daily = (log_ret ** 2).values
+
+    # Non-overlapping window sums to reduce chi-sq noise without inducing autocorrelation
+    n_windows = len(rv_daily) // window
+    rv_windows = rv_daily[:n_windows * window].reshape(n_windows, window).sum(axis=1)
+
+    # Reconstruct as a Series with dates at end of each window
+    dates = log_ret.index[window - 1: n_windows * window: window]
+    rv_proxy = pd.Series(rv_windows, index=dates[:n_windows], name="rv_proxy")
+    rv_proxy = rv_proxy[rv_proxy > 1e-12]
+    return rv_proxy
+
+
 def load_oxford_man(filepath: str, rv_col: str = "rv5") -> pd.Series:
     """Load Oxford-Man CSV and return a Series of realized variance for one index."""
     df = pd.read_csv(filepath, header=2, index_col=0, parse_dates=True)
@@ -62,27 +100,37 @@ def estimate_nu(log_vol: np.ndarray) -> float:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Calibrate RFSV model from Oxford-Man data")
+    parser = argparse.ArgumentParser(description="Calibrate RFSV model from Oxford-Man data or yfinance")
     parser.add_argument("--file", default=DEFAULT_FILE,
                         help="Path to Oxford-Man CSV (default: data/raw/oxfordmanrealizedvolatilityindices.csv)")
     parser.add_argument("--rv-col", default="rv5",
                         help="Realized variance column name (default: rv5)")
     parser.add_argument("--ticker", default=None,
-                        help="Filter to specific .SPX2, .FTSE, etc. (optional)")
+                        help="Filter to specific .SPX2, .FTSE, etc. (Oxford-Man) or yfinance ticker")
     parser.add_argument("--lag-max", type=int, default=20,
                         help="Maximum lag for variogram (default: 20)")
+    parser.add_argument("--source", choices=["oxfordman", "yfinance"], default="oxfordman",
+                        help="Data source: 'oxfordman' (default) or 'yfinance' (proxy RV from squared returns)")
     args = parser.parse_args()
 
-    if not os.path.exists(args.file):
-        print(f"ERROR: Data file not found at {args.file}")
-        print(f"Please download the Oxford-Man Realized Library from:")
-        print(f"  {DATA_URL}")
-        print(f"and place the CSV in {RAW_DIR}/")
-        sys.exit(1)
+    if args.source == "yfinance":
+        yf_ticker = args.ticker or "^GSPC"
+        print(f"Fetching proxy RV from yfinance ({yf_ticker}) ...")
+        rv = load_yfinance_rv(yf_ticker)
+        print(f"  Loaded {len(rv)} daily obs ({rv.index[0].date()} to {rv.index[-1].date()})")
+        print("  NOTE: Using (log-return)^2 as proxy — coarser than 5-min Oxford-Man RV.")
+    else:
+        if not os.path.exists(args.file):
+            print(f"ERROR: Data file not found at {args.file}")
+            print(f"Please download the Oxford-Man Realized Library from:")
+            print(f"  {DATA_URL}")
+            print(f"and place the CSV in {RAW_DIR}/")
+            print(f"\nAlternatively, run with --source yfinance for a proxy estimate.")
+            sys.exit(1)
 
-    print(f"Loading data from {args.file} ...")
-    rv = load_oxford_man(args.file, rv_col=args.rv_col)
-    print(f"  Loaded {len(rv)} daily observations ({rv.index[0].date()} to {rv.index[-1].date()})")
+        print(f"Loading data from {args.file} ...")
+        rv = load_oxford_man(args.file, rv_col=args.rv_col)
+        print(f"  Loaded {len(rv)} daily observations ({rv.index[0].date()} to {rv.index[-1].date()})")
 
     # log-volatility = 0.5 * log(realized_variance)
     log_vol = 0.5 * np.log(rv.values)
