@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# C++ build
+build/
+*.o
+*.a
+
+# Benchmark outputs (generated, not source)
+benchmarks/results/*.csv
+benchmarks/results/*.txt
+
+# Plot outputs (generated)
+plots/*.png
+
+# Oxford-Man raw data (too large / proprietary)
+data/raw/
+
+# IDE
+.DS_Store
