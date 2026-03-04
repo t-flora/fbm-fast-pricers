@@ -7,15 +7,62 @@ Sweeps RFSV model parameters to show how Asian call prices depend on:
   - Strike K (moneyness)
 
 Figures produced:
-  1. sensitivity_surface.png — 2-panel surface/heatmap: price vs (H, nu) at K=ATM
-  2. sensitivity_strike.png  — price vs K for each H value
+  1. sensitivity_surface.png -- 2-panel: heatmap price vs (H, nu) at ATM, and
+     line plot price vs H for each nu.
+  2. sensitivity_strike.png  -- price vs K for each H value at fixed nu=0.30.
 
 Usage:
-    uv run python plots/plot_sensitivity.py [--M 3000] [--N 252]
+    uv run python plots/plot_sensitivity.py [--M 10000] [--N 252]
 
 Output:
     plots/sensitivity_surface.png
     plots/sensitivity_strike.png
+
+──────────────────────────────────────────────────────────────────────────
+BEGINNER'S GUIDE
+──────────────────────────────────────────────────────────────────────────
+
+Why does price increase as H decreases?
+
+  This is the "roughness premium".  The RFSV model has sigma_t = exp(nu * W_t^H).
+  Rougher processes (smaller H) produce more erratic volatility paths — lots of
+  sharp spikes.  For Asian options, this matters because:
+  (1) Jensen's inequality: E[f(sigma)] > f(E[sigma]) for convex f.
+      Higher variability in sigma => higher expected payoff.
+  (2) ATM options are most sensitive to vol changes (high gamma, high vega).
+      The OTM/deep-ITM options are less affected (payoff is either always 0 or
+      approximately linear in price, insensitive to vol).
+
+Why does price increase with nu?
+
+  nu = vol-of-vol.  Larger nu => sigma_t varies more around its mean of 1.0.
+  Again by Jensen's inequality, more stochastic vol => higher option price.
+  The effect is symmetric: nu enters as exp(nu * W), so doubling nu does not
+  double the price, it amplifies in a nonlinear way.
+
+The heatmap and ax.invert_yaxis():
+
+  seaborn.heatmap() puts the first row of the DataFrame at the *top* of the y-axis
+  (highest y position), while our H_grid goes from small to large (0.05 to 0.50).
+  After seaborn draws the heatmap, the first row (H=0.05) appears at the top.
+  We call ax.invert_yaxis() to flip it so H increases upward, matching the
+  convention of H on the vertical axis increasing from bottom to top.
+
+  Contested point: seaborn.heatmap's inversion behavior changed across versions.
+  With annot=True, the annotations stay with their cells after inversion.
+  A more robust alternative would be to build the DataFrame with reversed index.
+
+The viridis colormap:
+
+  We use viridis (dark purple = low price, bright yellow = high price) rather
+  than coolwarm_r (which would make "rough" = red, "smooth" = blue — an
+  arbitrary color assignment with confusing connotations of risk).  Viridis is
+  perceptually uniform and colorblind-friendly.
+
+Contested point: this script computes O(H * nu * K) = 6 * 4 + 6 * 5 = 54 MC runs
+  at M=10000 paths each.  At ~0.2s per run (N=252, FFT Python engine), the total
+  runtime is ~11 seconds.  This is manageable but limits the grid resolution.
+  For a finer grid, the C++ benchmark should be used.
 """
 
 import argparse
@@ -95,7 +142,11 @@ def plot_surface(H_grid, nu_grid, price_grid, out_path, M):
     ax.set_xlabel("Vol-of-vol  nu")
     ax.set_ylabel("Hurst exponent  H")
     ax.set_title("ATM Price vs (H, nu)\nLow H (rough) = higher price")
-    # seaborn.heatmap inverts the y-axis by default; restore intuitive orientation
+    # seaborn.heatmap places the first DataFrame row (H=0.05) at the TOP of the
+    # y-axis, which reverses the natural ordering (H increases downward).
+    # invert_yaxis() flips it so H increases upward, matching the line plot in
+    # panel 2 and the reader's expectation ("rougher" = lower on the axis).
+    # Note: the text annotations stay correctly aligned with their cells.
     ax.invert_yaxis()
 
     # ── Panel 2: Line plot price vs H for each nu ────────────────────────────

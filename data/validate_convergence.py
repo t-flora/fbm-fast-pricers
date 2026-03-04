@@ -5,19 +5,52 @@ Answers: "How many paths are needed for the MC price to converge?"
 
 Experiment design:
   Controlled:    N=252, H=0.10, nu=0.30, K=100, T=1, S0=100, r=0
-  Independent:   M ∈ {100, 250, 500, 1k, 2.5k, 5k, 10k, 25k}
+  Independent:   M in {100, 250, 500, 1k, 2.5k, 5k, 10k, 25k}
   Dependent:     mean price and MC std-error across 5 independent seeds
 
 Two panels:
-  (a) Price ± 1σ vs M on log x-axis
-      Overlay: reference price (horizontal line) and ±2σ_payoff/√M band
-  (b) Log-log: MC std-error vs M; fitted slope (should be ≈ −0.5)
+  (a) Price +/- 1sigma vs M on log x-axis
+      Overlay: reference price (horizontal line) and +/-2*sigma_payoff/sqrt(M) band
+  (b) Log-log: MC std-error vs M; fitted slope (should be approx -0.5)
 
 Output:
     plots/convergence.png
 
 Usage:
     uv run python data/validate_convergence.py [--n-seeds 5] [--max-M 25000]
+
+──────────────────────────────────────────────────────────────────────────
+BEGINNER'S GUIDE
+──────────────────────────────────────────────────────────────────────────
+
+The Central Limit Theorem (CLT) guarantees that the Monte Carlo estimator
+
+    p_hat = (1/M) * sum_{i=1}^{M} payoff_i
+
+has standard error  sigma_payoff / sqrt(M),  regardless of dimension.
+This "1/sqrt(M)" rate is the fundamental MC convergence law.
+
+Why is sigma_payoff so large (~35)?
+  Our RFSV model uses sigma_0 = exp(nu * W_0^H) = 1.0 (100% annualised vol).
+  At 100% vol the stock path swings wildly, producing hugely variable payoffs.
+  The mean still converges correctly — it just takes more paths to pin it down.
+
+Estimating sigma_payoff:
+  We don't know sigma_payoff analytically, so we back it out from the largest-M
+  run using the CLT relation:
+    std(seed_prices at M_max) = sigma_payoff / sqrt(M_max)
+  => sigma_payoff_hat = std(seed_prices) * sqrt(M_max)
+  This is then used to draw the theoretical confidence bands in panel (a).
+
+Panel (b): why the fitted slope may differ from -0.5:
+  With only 5 seeds, the standard deviation estimate itself has high variance,
+  especially at small M (few samples from a heavy-tailed payoff distribution).
+  This is expected and does not indicate a bug — it is a consequence of
+  estimating a variance with 5 observations.  More seeds would tighten the fit.
+
+Contested point: the reference price (p_ref = 23.58) comes from 500k-path C++
+  Cholesky + FFT runs.  If the Python FFT engine had any normalization mismatch,
+  the comparison would be unfair.  The close agreement validates both engines.
 """
 
 import os
@@ -105,16 +138,21 @@ def main() -> None:
     mean_times  = np.array(mean_times)
     m_arr       = np.array(m_values, dtype=float)
 
-    # Estimate σ_payoff from the largest-M run:  σ_payoff ≈ std_prices[-1] * √M_max
+    # Estimate sigma_payoff from the largest-M run.
+    # CLT: std(seed_prices at M) = sigma_payoff / sqrt(M)
+    # => sigma_payoff = std(seed_prices) * sqrt(M)
+    # We use the largest M because it has the best-estimated std (most samples).
     sigma_payoff = std_prices[-1] * np.sqrt(m_arr[-1])
-    print(f"\nEstimated σ_payoff = {sigma_payoff:.4f}  (from M={m_values[-1]:,} run)")
+    print(f"\nEstimated sigma_payoff = {sigma_payoff:.4f}  (from M={m_values[-1]:,} run)")
 
-    # Log-log fit: log(std) = a + b*log(M)
+    # Log-log fit: log(std) = intercept + slope * log(M)
+    # Under CLT, slope = -0.5 exactly.  Deviations are due to noisy std estimates
+    # (especially at small M where we have only n_seeds observations of the variance).
     log_m   = np.log10(m_arr)
     log_std = np.log10(np.maximum(std_prices, 1e-8))
     slope, intercept, r2_val, _, _ = linregress(log_m, log_std)
-    r2 = r2_val ** 2
-    print(f"Log-log fit: slope = {slope:.3f}  (expected ≈ −0.50),  R² = {r2:.4f}")
+    r2 = r2_val ** 2  # linregress returns Pearson r, not R^2 -- must square it
+    print(f"Log-log fit: slope = {slope:.3f}  (expected approx -0.50),  R^2 = {r2:.4f}")
 
     # ── Plot ──────────────────────────────────────────────────────────────────
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)

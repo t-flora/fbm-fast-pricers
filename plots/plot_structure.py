@@ -5,20 +5,65 @@ Two key insights visualised:
 
   1. Toeplitz structure of fGn increments (motivates FFT circulant embedding)
        - fBM covariance C(t_i, t_j) is NOT translation-invariant (non-stationary).
-       - fGn increment covariance γ(|i-j|) IS translation-invariant → Toeplitz.
-       - A Toeplitz matrix embeds in a PSD circulant → exact O(N log N) sampling.
+       - fGn increment covariance gamma(|i-j|) IS translation-invariant => Toeplitz.
+       - A Toeplitz matrix embeds in a PSD circulant => exact O(N log N) sampling.
 
   2. Low-rank off-diagonal structure of fBM covariance (motivates H-matrix + rSVD)
-       - The kernel C(s,t) is smooth away from the diagonal s ≈ t.
+       - The kernel C(s,t) is smooth away from the diagonal s approx t.
        - Smooth kernels on well-separated blocks have low numerical rank
-         (Candès, Demanet & Ying 2008).
-       - Rougher H → slower singular-value decay → higher rank needed.
+         (Candes, Demanet & Ying 2008).
+       - Rougher H => slower singular-value decay => higher rank needed.
 
 Output:
     plots/structure_analysis.png
 
 Usage:
     uv run python plots/plot_structure.py [--N-small 64] [--N-large 128]
+
+──────────────────────────────────────────────────────────────────────────
+BEGINNER'S GUIDE
+──────────────────────────────────────────────────────────────────────────
+
+Panel (a) vs (b): fBM vs fGn covariance heatmaps
+
+  fBM covariance: C(t_i, t_j) = 0.5 * (t_i^{2H} + t_j^{2H} - |t_i-t_j|^{2H})
+  The value at position (i,j) depends on both i AND j — each diagonal has a
+  different color, confirming non-stationarity.
+
+  fGn covariance: gamma(|i-j|) — depends only on the lag |i-j|, not on i or j
+  separately.  Each anti-diagonal has the same color: this is Toeplitz.
+
+  A Toeplitz matrix T has T[i,j] = f(|i-j|).  Any Toeplitz T can be embedded
+  into a 2N x 2N circulant C (by mirroring its first row), and a circulant
+  is diagonalized by the DFT: C = F * diag(lambda) * F*.  This means we can
+  sample from N(0, T) exactly using O(N log N) FFTs, not O(N^3) Cholesky.
+
+Panel (c): diagonal slice profiles
+
+  For a Toeplitz matrix, C[i, i+k] = gamma(k) for ALL i (flat in i).
+  For fBM, C[i, i+k] grows with i because later time points t_i = i*dt are
+  larger, inflating the t_i^{2H} terms.
+
+  The plot overlays two rows (i=0 and i=N/4) for both fBM and fGn.
+  If the script is working correctly, the two fGn curves must overlap exactly
+  (verified numerically: max deviation = 0.00e+00).
+
+Panel (d): off-diagonal singular value decay
+
+  The "off-diagonal block" is the top-right N/2 x N/2 quadrant of C, which
+  represents covariances between the first and second halves of the path — a
+  well-separated pair of time intervals.
+
+  Singular values are normalised by sigma_1 (the largest), so we compare
+  the *relative* decay rates.  For H=0.5 (standard BM), the kernel is smoother,
+  the block has fast-decaying singular values, and a small rank k suffices.
+  For H=0.1 (rough fBM), the kernel has a singularity near zero, the block
+  decays slowly, and we need a larger rank to capture the same fraction of energy.
+
+  Contested point: the "off-diagonal block" is just N/2 x N/2.  A full H-matrix
+  would recursively partition the matrix and compress each off-diagonal sub-block
+  separately.  Our implementation uses a *global* rank-k approximation, which
+  is simpler but less space-efficient than a true hierarchical H-matrix.
 """
 
 import os

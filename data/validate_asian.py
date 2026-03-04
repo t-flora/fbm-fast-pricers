@@ -9,8 +9,8 @@ Two outputs:
   (b) Roughness premium: RFSV(H=0.1) - RFSV(H=0.5) vs strike
 
 Sanity checks:
-  - At nu→0 (tiny), RFSV should converge to Levy with sigma=1.0
-    (because sigma_t = exp(nu*W_t^H) → 1 as nu → 0)
+  - At nu -> 0 (tiny), RFSV should converge to Levy with sigma=1.0
+    (because sigma_t = exp(nu*W_t^H) -> 1 as nu -> 0)
   - RFSV(H=0.5) introduces stochastic vol (but smooth); prices > Levy due to
     Jensen's inequality / vol-of-vol convexity
   - RFSV(H=0.1) adds roughness; roughness premium concentrated near ATM
@@ -20,6 +20,50 @@ Usage:
 
 Output:
     plots/validate_asian.png
+
+──────────────────────────────────────────────────────────────────────────
+BEGINNER'S GUIDE
+──────────────────────────────────────────────────────────────────────────
+
+What is the Levy (1992) approximation?
+
+  Turnbull & Wakeman (1991) and Levy (1992) derived a semi-analytical formula
+  for the arithmetic Asian call under *constant* sigma (standard GBM), by
+  matching the first two moments of the arithmetic average to a lognormal
+  distribution.  This gives a closed-form price in terms of Black-Scholes
+  inputs.  It is not exact but is accurate to < 1% for typical parameters.
+
+  We use it as a benchmark because:
+  (1) At nu = 0, RFSV reduces to constant-sigma GBM, so RFSV should match Levy.
+  (2) Levy is fast (no MC noise), giving a clean baseline.
+
+Why do RFSV prices exceed Levy (even at H=0.5)?
+
+  The RFSV model has sigma_t = exp(nu * W_t^H), which is stochastic.
+  By Jensen's inequality, E[sigma^2] > E[sigma]^2 for any random sigma.
+  This "volatility convexity" makes options more expensive than under constant
+  sigma.  The effect is larger for larger nu and larger H (smoother => slower
+  mean reversion back to sigma_0, so sigma_t wanders further from 1.0).
+
+What is the roughness premium?
+
+  RFSV(H=0.1) - RFSV(H=0.5) measures the additional price attributable
+  purely to roughness, holding nu fixed.  Rougher vol (H=0.1) produces sharper,
+  shorter-lived volatility spikes.  For Asian options (which average over time),
+  these spikes partially cancel in the payoff, but their presence still raises
+  option prices near ATM where the payoff is most sensitive to vol fluctuations.
+
+Multiple seeds and error bars:
+
+  We run n_seeds=3 independent Monte Carlo runs per (H, K) and display ±1sigma
+  error bars.  This is important: without error bars it is impossible to tell
+  whether differences between methods are real or just MC noise.  At M=5000,
+  sigma_MC ~ 35/sqrt(5000) ~ 0.5, so two prices must differ by > 1.0 to be
+  meaningfully separated.
+
+Contested point: Levy uses a lognormal approximation to the arithmetic average.
+  This approximation breaks down for deep OTM/ITM options or very high sigma.
+  We show results across K in {70..130} where the approximation holds well.
 """
 
 import argparse

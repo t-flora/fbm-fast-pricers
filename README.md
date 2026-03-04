@@ -1,6 +1,6 @@
 # Rough Volatility Asian Option Pricer
 
-A high-performance Monte Carlo pricer for an **Arithmetic Asian Call Option** under the **Rough Fractional Stochastic Volatility (RFSV)** model, benchmarking three methods for generating fractional Brownian motion (fBM) paths. The project is a practical study in how algorithmic complexity theory translates to real speedups on a computationally demanding financial problem.
+A high-performance Monte Carlo pricer for an **Arithmetic Asian Call Option** under the **Rough Fractional Stochastic Volatility (RFSV)** model, benchmarking three algorithms for generating fractional Brownian motion (fBM) paths. The project is a practical study in how complexity theory translates to real speedups on a computationally demanding financial problem.
 
 ---
 
@@ -8,292 +8,231 @@ A high-performance Monte Carlo pricer for an **Arithmetic Asian Call Option** un
 
 ### Why rough volatility?
 
-Gatheral, Jaisson & Rosenbaum (2014) — [*Volatility is rough*](papers-bg/vol-is-rough.pdf) — showed by estimating volatility from high-frequency data that **log-volatility behaves essentially as fractional Brownian motion with Hurst exponent $H \approx 0.1$**. This finding is empirically robust across many equity indices and time scales.
+Gatheral, Jaisson & Rosenbaum (2014) showed by estimating volatility from high-frequency data that **log-volatility behaves essentially as fractional Brownian motion with Hurst exponent $H \approx 0.1$**. This is empirically robust across many equity indices and time scales.
 
 The **RFSV model** specifies log-volatility as:
 
 $$\log \sigma_t = \nu \, W_t^H$$
 
-where $W^H$ is fBM with $H \approx 0.1$ and $\nu$ is the volatility-of-volatility. Because $H < \tfrac{1}{2}$, increments are **anti-persistent** ("rough"), meaning each spike in volatility is likely to reverse. This is the opposite of the classical long-memory assumption ($H > \tfrac{1}{2}$) and contradicts much of the prior literature.
-
-The fBM $W^H$ is characterised by its scaling law: for any $q > 0$,
-
-$$\mathbb{E}\bigl[|W^H_{t+\Delta} - W^H_t|^q\bigr] = K_q \,\Delta^{qH}$$
-
-so increments have Hölder regularity $r$ for any $r < H$.
+where $W^H$ is fBM with $H \approx 0.1$ and $\nu$ is the volatility-of-volatility. Because $H < \tfrac{1}{2}$, increments are **anti-persistent** ("rough") — each volatility spike is likely to reverse. This contradicts classical long-memory models ($H > \tfrac{1}{2}$) and matches observed implied volatility smiles far better.
 
 ### Why is this computationally hard?
 
-fBM is **non-Markovian**: the future distribution of $W^H_t$ depends on the entire past path. There is no recursion or SDE to step forward from. Exact path generation requires constructing the full $N \times N$ covariance matrix:
+fBM is **non-Markovian**: the future of $W^H_t$ depends on the entire past path. There is no recursion to step forward. Exact path generation requires sampling from the full $N \times N$ multivariate Gaussian:
 
 $$C_{ij} = \mathbb{E}\!\left[W^H(t_i)\, W^H(t_j)\right] = \tfrac{1}{2}\!\left(t_i^{2H} + t_j^{2H} - |t_i - t_j|^{2H}\right)$$
 
-This is dense — every pair of time points is correlated — and its Cholesky factorisation costs $O(N^3)$. For $N = 1\,000$ timesteps and $M = 10\,000$ Monte Carlo paths this is the dominant bottleneck.
+This matrix is dense — every pair of time points is correlated — and dense Cholesky costs $O(N^3)$.
 
 ### The option
 
-**Arithmetic Asian Call Option**: the payoff at maturity is
+**Arithmetic Asian Call**: payoff at maturity is
 
 $$V = \max\!\left(\frac{1}{N}\sum_{i=1}^{N} S_i - K,\; 0\right)$$
 
-The averaging over the full price path $S_1, \ldots, S_N$ makes this path-dependent and eliminates any closed-form pricing formula. Monte Carlo simulation is the standard method.
+The path-dependent average eliminates any closed-form pricing formula. Monte Carlo is the standard method.
 
 ---
 
 ## Three Algorithms
 
-### Algorithm 1 — Dense Cholesky &nbsp; $O(N^3)$ factorisation, $O(N^2)$ per path
+### Algorithm 1 — Dense Cholesky
 
-**File:** `src/cholesky/cholesky.hpp`
+**File:** `src/cholesky/cholesky.hpp` | **Cost:** $O(N^3)$ setup, $O(N^2)$ per path
 
-Build the full $N \times N$ fBM covariance matrix $C$ and compute its Cholesky factor $L = \operatorname{chol}(C)$ once via Eigen's `LLT`. For each Monte Carlo path, draw $z \sim \mathcal{N}(0, I_N)$ and form
+Build the full $N \times N$ fBM covariance matrix $C$ and factorize it as $C = LL^\top$ once via `Eigen::LLT`. For each Monte Carlo path, draw $z \sim \mathcal{N}(0, I_N)$ and compute $\log \sigma = \nu L z$.
 
-$$\log \sigma = \nu L z$$
+The per-path $O(MN^2)$ term dominates for $M = 10{,}000$ paths, yielding an observed scaling exponent of $\approx 1.54$ rather than 3.
 
-The per-path matrix-vector multiply $Lz$ costs $O(N^2)$, so total cost scales as $O(N^3 + M N^2)$.
+### Algorithm 2 — Circulant Embedding + FFT
 
-In practice for $M = 10\,000$ the per-path $O(MN^2)$ term dominates for $N < 10\,000$, giving an observed scaling exponent of $\approx 1.54$ rather than $3$.
+**File:** `src/fft/fft.hpp` | **Cost:** $O(N \log N)$ setup, $O(N \log N)$ per path
 
-### Algorithm 2 — Circulant Embedding + FFT &nbsp; $O(N \log N)$ per path
-
-**File:** `src/fft/fft.hpp`
-
-Based on the **Davies–Harte / Wood–Chan** exact method. The key insight is that fBM **increments** (fractional Gaussian noise, fGn) *are* stationary, even though fBM itself is not — so the increment covariance matrix is Toeplitz. A Toeplitz matrix embeds into a larger circulant matrix whose eigenvalues are the DFT of its first row, enabling exact sampling via FFT.
+Based on the **Davies–Harte / Wood–Chan** exact method. The key insight: fBM **increments** (fractional Gaussian noise, fGn) are stationary even though fBM is not, so the increment covariance is Toeplitz. A Toeplitz matrix embeds into a circulant whose eigenvalues are the DFT of its first row.
 
 **fGn autocovariance** at lag $k$:
 
 $$\gamma(k) = \frac{\mathrm{d}t^{2H}}{2}\!\left(|k+1|^{2H} + |k-1|^{2H} - 2|k|^{2H}\right)$$
 
-**Embedding:** form the $2N$-periodic circulant first row
-
-$$c = \bigl[\gamma(0),\, \gamma(1),\, \ldots,\, \gamma(N-1),\, 0,\, \gamma(N-1),\, \ldots,\, \gamma(1)\bigr]$$
+**Embedding:** size-$2N$ circulant first row $c = [\gamma(0), \ldots, \gamma(N{-}1), 0, \gamma(N{-}1), \ldots, \gamma(1)]$
 
 **Eigenvalues:** $\lambda = \operatorname{FFT}(c)$ — all $\lambda_j \geq 0$ for $H \leq \tfrac{1}{2}$ (Wood & Chan 1994).
 
-**Per path:** draw complex white noise $w_j$, scale by $\sqrt{\lambda_j / M}$, apply IFFT, take real part → fGn increments. Cumsum gives the fBM log-vol path.
+**Per path:** draw complex white noise $w_j$, scale by $\sqrt{\lambda_j / 2N}$, apply IFFT, take real part → fGn increments. Cumulative sum gives the fBM log-vol path. FFTW plans are created once and reused.
 
-> **Critical:** embedding the *fBM* covariance directly fails because fBM is non-stationary; only the *increments* have a Toeplitz covariance that embeds into a PSD circulant. Using the fBM covariance produces negative eigenvalues and a runtime crash.
+> **Critical:** the fBM covariance itself is non-Toeplitz and produces negative eigenvalues if embedded directly. Only the increment covariance embeds into a valid PSD circulant.
 
-FFTW plans are created once outside the Monte Carlo loop and reused for all paths.
+### Algorithm 3 — H-matrix + Randomized SVD
 
-### Algorithm 3 — H-matrix + Randomized SVD &nbsp; $O(Nk^2)$ construction, $O(Nk)$ per path
+**Files:** `src/hmatrix/hmatrix.hpp`, `src/hmatrix/rsvd.hpp` | **Cost:** $O(Nk^2)$ setup, $O(Nk)$ per path
 
-**Files:** `src/hmatrix/hmatrix.hpp`, `src/hmatrix/rsvd.hpp`
+The fBM covariance kernel is smooth away from its diagonal, so off-diagonal blocks are numerically low-rank (Candès, Demanet & Ying 2008). A global rank-$k$ randomized SVD (Halko, Martinsson & Tropp 2011) approximates:
 
-Motivated by two observations:
+$$C \approx U \operatorname{diag}(S) U^\top, \qquad U \in \mathbb{R}^{N \times k}$$
 
-1. The fBM covariance kernel $C(t,s)$ is smooth away from the diagonal $t \approx s$; off-diagonal (far-field) blocks are approximately low-rank. The theoretical basis comes from [*A Fast Butterfly Algorithm for Fourier Integral Operators*](papers-bg/fast-butterfly-fft.pdf) (Candès, Demanet & Ying, 2008), which proves that smooth kernels restricted to well-separated dyadic boxes have numerically low rank.
+The approximate Cholesky factor $L_k = U \operatorname{diag}(\sqrt{S})$ satisfies $L_k L_k^\top \approx C$, reducing per-path cost to $O(Nk)$.
 
-2. Randomized SVD can exploit this efficiently: Halko, Martinsson & Tropp (2011) — [*Finding Structure with Randomness*](papers-bg/2010_HMT_random_review.pdf) — prove that a rank-$k$ sketch with $q$ power iterations recovers the dominant singular subspace of any matrix in $O(mn \log k)$ operations with high probability.
+**rSVD** (Algorithm 4.4 from Halko et al.): random sketch $Y = C\Omega$, $q = 2$ power iterations (critical for slowly-decaying spectra at $H = 0.1$), QR decomposition, thin SVD on the small projected matrix.
 
-**Rank-$k$ approximation:**
-
-$$C \approx U \operatorname{diag}(S) U^\top \qquad (U \in \mathbb{R}^{N \times k},\; S_i > 0)$$
-
-The approximate Cholesky factor $L_k = U \operatorname{diag}(\sqrt{S})$ satisfies $L_k L_k^\top \approx C$, so per-path cost drops from $O(N^2)$ to $O(Nk)$:
-
-$$\log \sigma \approx \nu L_k z_k, \qquad z_k \sim \mathcal{N}(0, I_k)$$
-
-**rSVD algorithm** (`rsvd.hpp`, Algorithm 4.4 from Halko et al.):
-
-1. Draw Gaussian sketch $\Omega \in \mathbb{R}^{N \times (k+p)}$ with oversampling $p = 5$
-2. Form $Y = C\Omega$; apply $q = 2$ power iterations: $Y \leftarrow (CC^\top)^q C\Omega$
-3. QR: $Y = QR$
-4. Project: $B = Q^\top C$; compute thin SVD of the small $(k{+}p) \times N$ matrix $B$
-
-Power iteration is critical: with $H = 0.1$ the singular values of $C$ decay slowly, so without it the sketch quality degrades significantly.
+Two variants implemented: `price_timed()` (holds $C$ in memory throughout) and `price_freed_timed()` (releases $C$ before the MC loop, reducing peak RSS from $O(N^2)$ to $O(Nk)$).
 
 ---
 
 ## Computational Results
 
-Benchmarked at $M = 10\,000$ paths, $N \in \{252, 500, 1000\}$:
+Benchmarked at $M = 10{,}000$ paths, $N \in \{252, 500, 1000\}$:
 
-| Method | Fitted $t \approx c \cdot N^\alpha$ | $\alpha$ | $c$ | $R^2$ |
-|---|---|---|---|---|
-| Dense Cholesky | $O(MN^2 + N^3)$ | 1.54 | $4.0 \times 10^{-5}$ | 0.999 |
-| Circulant+FFT | $O(N \log N)$ | 1.03 | $9.2 \times 10^{-4}$ | 1.000 |
-| H-matrix+rSVD ($k=32$) | $O(Nk)$ per path | 1.06 | $2.9 \times 10^{-4}$ | 1.000 |
+| Method | Complexity | Fitted $\alpha$ | $c$ | $R^2$ |
+|--------|-----------|-----------------|-----|-------|
+| Dense Cholesky | $O(MN^2 + N^3)$ | 1.54 | $4.1 \times 10^{-5}$ | 0.999 |
+| Circulant+FFT | $O(MN \log N)$ | 1.01 | $1.0 \times 10^{-3}$ | 1.000 |
+| H-matrix+rSVD $(k=32)$ | $O(MNk)$ | 1.06 | $3.0 \times 10^{-4}$ | 1.000 |
 
-FFT and H-matrix both scale as $O(N)$ in this regime — the $\log N$ factor is invisible across a $4\times$ range of $N$. Cholesky's exponent of 1.54 reflects the mixed $O(MN^2 + N^3)$ cost where the per-path term dominates for $M = 10\,000$.
+FFT and H-matrix both scale as $O(N)$ in this regime (the $\log N$ factor is invisible across a $4\times$ range of $N$).
 
-**H-matrix approximation quality** (relative Frobenius norm $\|C - C_k\|_F \,/\, \|C\|_F$):
+**Memory** (Apple M2, $N = 1000$):
+
+| Method | Peak memory | Cache pressure (L3 = 16 MB) |
+|--------|------------|------------------------------|
+| Cholesky | 7.6 MB ($N^2 \cdot 8$) | $0.48\times$ |
+| FFT | 0.015 MB ($2N \cdot 8$) | $0.001\times$ |
+| H-matrix (C held) | 7.6 MB | $0.48\times$ |
+| H-matrix (C freed) | 0.24 MB ($Nk \cdot 8$) | $0.015\times$ |
+
+Cholesky memory-bandwidth utilization: $\approx 47$ GB/s at $N = 1000$ (47% of M2's rated 100 GB/s), confirming the MC loop is memory-bound.
+
+**H-matrix approximation quality** ($\|C - C_k\|_F / \|C\|_F$):
 
 | Rank $k$ | Frobenius error |
-|---|---|
-| 2 | 8.5% |
+|----------|----------------|
+| 4 | 5.4% |
 | 16 | 2.5% |
+| 64 | 1.5% |
 | 128 | 1.2% |
 
-Errors decay slowly because the singular value spectrum of $C$ decays slowly for rough $H = 0.1$ — a fundamental property of rough processes. At $H = 0.4$ (closer to Brownian) convergence would be much faster.
+Slow convergence is fundamental: the singular spectrum of $C$ decays slowly for rough $H = 0.1$.
 
-**Reference price:** $p_\text{ref} = 23.58$ (average of 500k-path Cholesky and 500k-path FFT runs; $H = 0.10$, $\nu = 0.30$, $S_0 = K = 100$, $T = 1$).
-
----
-
-## A Fourth Method (not implemented): Hybrid Scheme
-
-Bennedsen, Lunde & Pakkanen (2017) — [*Hybrid scheme for Brownian semistationary processes*](papers-bg/hybrid-scheme-brownian-semistationary-process.pdf) — introduce a simulation scheme better suited to rough kernels. The fBM kernel
-
-$$g(x) = x^{H - 1/2} = x^{-0.4} \qquad (H = 0.1)$$
-
-has a power-law singularity near zero that circulant embedding handles poorly: the first step-function cell misses the spike. The hybrid scheme approximates $g(x)$ as a power function near zero (analytically integrable, exact near the singularity) and step functions elsewhere, while keeping the same $O(N \log N)$ complexity.
-
-For $\alpha = H - \tfrac{1}{2} \approx -0.4$, the hybrid scheme reduces RMSE by more than 80% versus the plain Riemann scheme. Implementing it as Algorithm 4 would provide a more accurate baseline for small $N$ and is the most natural extension of this project.
+**Reference price:** $p_\text{ref} = 23.58$ (average of 500k-path Cholesky and 500k-path FFT; $H = 0.10$, $\nu = 0.30$, $S_0 = K = 100$, $T = 1$).
 
 ---
 
-## Validation Against Market Data
+## Validation
 
-Confirming the model against traded prices requires three layers of validation, from easiest to hardest data access.
+### Phase 1 — Implied volatility smile vs SPY option chains
 
-### Phase 0 — RFSV Calibration (already implemented)
-
-Run `data/calibrate.py` on the [Oxford-Man Realized Library](https://realized.oxford-man.ox.ac.uk/data/download) (free, manual download). The script estimates $H$ via variogram regression
-
-$$\mathbb{E}\!\left[|\log\sigma_{t+h} - \log\sigma_t|^2\right] \;\approx\; c \cdot h^{2H}$$
-
-and $\nu$ as the standard deviation of log-vol increments.
+`data/validate_iv.py` fetches live SPY European option chains via yfinance, computes market implied volatilities via Black-Scholes inversion, and overlays RFSV model IVs. A log-vol drift $\mu_0$ is auto-calibrated to match the ATM market IV, isolating the smile *shape* rather than level.
 
 ```bash
-python data/calibrate.py --rv-col rv5
-# paste printed H and nu into src/common/params.hpp, then rebuild
+uv run python data/validate_iv.py [--M 3000] [--N 63]
+# → plots/validate_iv.png
 ```
 
-### Phase 1 — Validate against vanilla implied-volatility surface (free)
+### Phase 2 — Lévy benchmark + roughness premium
 
-Vanilla (European) options on SPX/SPY are liquid and exchange-traded. The RFSV model should reproduce their implied volatility smile, particularly the characteristic power-law ATM skew:
+`data/validate_asian.py` benchmarks the RFSV Asian price against the Lévy (1992) log-normal approximation and computes the roughness premium: the price increase when H is reduced from 0.5 (standard GBM) to 0.1 (rough volatility). Runs 3 seeds for ±1σ error bars.
 
-$$\partial_k \sigma_\text{BS}(k, T) \;\sim\; T^{H - 1/2} \quad \text{as } T \to 0$$
-
-**Implementation plan:**
-
-```python
-# data/validate_iv.py
-import yfinance as yf
-from py_vollib.black_scholes.implied_volatility import implied_volatility
-
-# 1. Fetch SPY option chains for several expiries
-ticker = yf.Ticker("SPY")
-S = ticker.history(period="1d")["Close"].iloc[-1]
-r = 0.05  # risk-free rate (current Fed funds)
-
-results = []
-for expiry in ["2026-06-20", "2026-09-19", "2026-12-18"]:
-    chain = ticker.option_chain(expiry).calls
-    T = (pd.Timestamp(expiry) - pd.Timestamp.today()).days / 365
-    chain["market_iv"] = chain.apply(
-        lambda row: implied_volatility(row["lastPrice"], S, row["strike"], T, r, "c"),
-        axis=1
-    )
-    # 2. Price same contracts with RFSV Monte Carlo
-    chain["model_price"] = chain["strike"].apply(
-        lambda K: rfsv_european_price(S, K, T, H, nu, M=50_000)
-    )
-    chain["model_iv"] = chain.apply(
-        lambda row: implied_volatility(row["model_price"], S, row["strike"], T, r, "c"),
-        axis=1
-    )
-    results.append(chain[["strike", "market_iv", "model_iv"]])
-
-# 3. Plot IV smile: model vs market
+```bash
+uv run python data/validate_asian.py [--M 5000] [--N 252]
+# → plots/validate_asian.png
 ```
 
-**Dependencies to add:** `uv add yfinance py-vollib`
+### Phase 3 — Sensitivity: H × nu heatmap + price vs strike
 
-**Expected output:** Two plots per expiry — market IV smile (curved) vs RFSV model IV smile. The RFSV model is known to produce a steep ATM skew that matches SPX options better than classical Heston for short maturities.
+`plots/plot_sensitivity.py` sweeps $H \in \{0.05, 0.10, 0.15, 0.20\}$ and $\nu \in \{0.1, 0.2, 0.3, 0.4\}$, producing an ATM price heatmap and price-vs-strike curves for varying H.
 
-### Phase 2 — Compare to traded Asian option prices
-
-**Exchange-traded Asian options:** CME's **Average Price Options (APO)** on WTI crude oil (ticker `CL`) settle on the arithmetic average of daily front-month futures over the contract month — exactly the payoff we price.
-
-**Data access options (cheapest first):**
-
-| Source | Cost | Method |
-|---|---|---|
-| CME daily settlement prices | Free (delayed) | Manual download from [cmegroup.com](https://www.cmegroup.com/markets/energy/crude-oil/light-sweet-crude.html) |
-| CME DataMine | ~$300–500/month | REST API, historical tick + settlement |
-| Quandl/Nasdaq Data Link | ~$50/month | `CHRIS/CME_CL1` series (spot only); APO separate |
-| Academic data request | Free | CME academic data program for universities |
-
-**Implementation plan:**
-
-```python
-# data/validate_asian.py
-
-# 1. Load CME WTI APO settlement prices (manual CSV download)
-#    Columns: date, expiry, strike, option_type, settlement_price, underlying_avg_price
-apo_df = pd.read_csv("data/raw/wti_apo_settlements.csv", parse_dates=["date"])
-
-# 2. Calibrate RFSV to WTI realized variance (not equity — use energy RV)
-#    Oxford-Man has WTI realized variance in some datasets
-#    Alternative: compute from daily WTI futures prices via yfinance
-wti = yf.download("CL=F", start="2020-01-01", end="2025-12-31")
-log_returns = np.log(wti["Close"]).diff().dropna()
-# estimate H, nu from log-returns (approximate; ideally use intraday data)
-
-# 3. For each option in the dataset, compute RFSV model price
-for _, row in apo_df.iterrows():
-    model_price = price_asian_call(
-        S0=row["underlying_price"],
-        K=row["strike"],
-        T=row["days_to_expiry"] / 252,
-        H=H_wti, nu=nu_wti, M=50_000
-    )
-    row["model_price"] = model_price
-    row["price_error"] = row["settlement_price"] - model_price
-
-# 4. Report: mean absolute error, relative error, by moneyness bucket
-```
-
-**Alternative (no market data):** Benchmark against the **Turnbull-Wakeman approximation** — a closed-form formula for arithmetic Asian calls under log-normal dynamics. Use it as a sanity check: at $H = 0.5$ the RFSV model reduces to standard GBM, so the two should agree.
-
-### Phase 3 — Sensitivity analysis
-
-Vary $H \in \{0.05, 0.10, 0.15, 0.20\}$ and $\nu \in \{0.1, 0.2, 0.3, 0.4\}$, compute model prices for a grid of strikes/maturities, and produce a surface plot. This answers: *how sensitive is the Asian option price to the roughness parameter?*
-
-```python
-# plots/plot_sensitivity.py
-H_grid  = [0.05, 0.10, 0.15, 0.20]
-nu_grid = [0.10, 0.20, 0.30, 0.40]
-K_grid  = [90, 95, 100, 105, 110]
-
-# Run ./build/benchmark with modified params, or call Python FFI if wrapped
-prices = {(H, nu, K): price_fft(H, nu, K) for H in H_grid for nu in nu_grid for K in K_grid}
+```bash
+uv run python plots/plot_sensitivity.py [--M 10000] [--N 252]
+# → plots/sensitivity_surface.png, plots/sensitivity_strike.png
 ```
 
 ---
 
-## Workflow
+## Structural Analysis
 
-### 1. Calibrate parameters from data
+`plots/plot_structure.py` provides the geometric motivation for each algorithm:
+
+- **Toeplitz structure of fGn** (why FFT works): fGn covariance heatmap shows constant diagonals; fBM covariance does not. The translational invariance of increments is exactly what enables the circulant embedding.
+- **Low-rank off-diagonal blocks** (why H-matrix/rSVD works): singular value decay of the off-diagonal block is faster for $H = 0.5$ than $H = 0.1$, connecting to Candès-Demanet-Ying (2008).
 
 ```bash
-# Place Oxford-Man realized variance CSV in data/raw/
-# https://realized.oxford-man.ox.ac.uk/data/download
-python data/calibrate.py
-# Copy printed H and nu values into src/common/params.hpp
+uv run python plots/plot_structure.py [--N-small 64] [--N-large 128]
+# → plots/structure_analysis.png
 ```
 
-### 2. Build
+---
+
+## Additional Experiments
+
+| Script | What it measures | Output |
+|--------|-----------------|--------|
+| `data/validate_convergence.py` | Price ±1σ vs M paths; log-log slope confirms σ ∝ 1/√M | `plots/convergence.png` |
+| `data/validate_stability.py` | FFT eigenvalue clipping near H=0.5; rSVD condition number vs rank; Cholesky κ(C) vs N | `plots/stability_report.png` |
+| `data/profile_memory.py` | Python engine tracemalloc peak vs N×M | `plots/memory_profile.png` |
+| `plots/plot_scaling.py` | Timing + complexity fits; construction vs MC breakdown; memory vs N | `plots/time_vs_N.png`, `plots/construction_breakdown.png`, `plots/memory_vs_N.png`, `plots/error_vs_rank.png` |
+
+---
+
+## A Fourth Method (future work): Hybrid Scheme
+
+Bennedsen, Lunde & Pakkanen (2017) introduce a simulation scheme better suited to rough kernels. The fBM kernel $g(x) = x^{H - 1/2}$ has a power-law singularity near zero that circulant embedding handles poorly (the first step misses the spike). The hybrid scheme approximates $g$ analytically near zero and with step functions elsewhere, keeping $O(N \log N)$ complexity while reducing RMSE by more than 80% for $H = 0.1$.
+
+---
+
+## Build and Run
 
 ```bash
+# Build all binaries
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-```
 
-### 3. Run benchmarks
+# Calibrate H and nu from market data
+uv run python data/calibrate.py --source yfinance   # free; H ≈ 0.12
+# (or place Oxford-Man CSV in data/raw/ and omit --source)
+# Paste printed H and nu into src/common/params.hpp, then rebuild.
 
-```bash
+# Run C++ benchmark (writes CSVs to benchmarks/results/)
 ./build/benchmark
-# Outputs: benchmarks/results/time_vs_N.csv, error_vs_rank.csv, reference_price.txt
+
+# All plots
+uv run python plots/plot_scaling.py
+uv run python plots/plot_structure.py
+uv run python data/validate_convergence.py
+uv run python data/validate_stability.py
+uv run python data/validate_iv.py
+uv run python data/validate_asian.py
+uv run python plots/plot_sensitivity.py
 ```
 
-### 4. Visualize
+---
 
-```bash
-uv run python plots/plot_scaling.py
-# Outputs: plots/time_vs_N.png, plots/error_vs_rank.png
+## Project Structure
+
+```
+papers-bg/              Source papers (references below)
+data/
+  calibrate.py          Estimates H, nu from Oxford-Man or yfinance
+  rfsv_model.py         Vectorized Python fBM Monte Carlo engine
+  validate_iv.py        Phase 1: IV smile vs live SPY chains
+  validate_asian.py     Phase 2: Lévy benchmark + roughness premium
+  validate_convergence.py  MC convergence study (price vs M)
+  validate_stability.py    Stability: clipping, conditioning, κ(C)
+  profile_memory.py     Python engine tracemalloc profiling
+src/common/
+  params.hpp            Calibrated H, nu, S0, K, T, r (update after calibration)
+  covariance.hpp        fBM kernel + Eigen matrix builder
+  asian_payoff.hpp      Payoff + log-vol → price path
+  rng.hpp               Seeded RNG helpers
+src/cholesky/           Algorithm 1: Dense Cholesky
+src/fft/                Algorithm 2: Circulant embedding + FFTW
+src/hmatrix/            Algorithm 3: H-matrix + rSVD (rsvd.hpp = Halko et al. Alg 4.4)
+benchmarks/
+  benchmark.cpp         Timing + accuracy + memory runner; writes CSVs
+  results/              time_vs_N.csv, error_vs_rank.csv, reference_price.txt
+plots/
+  plot_scaling.py       Timing fits + construction breakdown + memory vs N
+  plot_structure.py     Toeplitz heatmaps + SVD decay
+  plot_sensitivity.py   Phase 3: H×nu heatmap + price vs strike
+ALGORITHMS.md           Beginner's guide to each algorithm with code annotations
 ```
 
 ---
@@ -301,36 +240,19 @@ uv run python plots/plot_scaling.py
 ## Dependencies
 
 | Package | Purpose | Install |
-|---|---|---|
+|---------|---------|---------|
 | Eigen3 | Dense matrix ops, Cholesky | `brew install eigen` |
 | FFTW3 | Fast Fourier transforms | `brew install fftw` |
 | CMake 3.16+ | Build system | `brew install cmake` |
-| Python (uv) | Calibration + plotting | `uv add pandas numpy scipy matplotlib seaborn` |
-| yfinance | SPX/SPY option chains for IV validation | `uv add yfinance` |
-| py-vollib | Black-Scholes implied volatility inversion | `uv add py-vollib` |
-
----
-
-## Project Structure
-
-```
-papers-bg/          Source papers (see references below)
-data/               Oxford-Man data + calibration script
-src/common/         Shared C++ headers: params, fBM covariance, payoff, RNG
-src/cholesky/       Algorithm 1: Dense Cholesky
-src/fft/            Algorithm 2: Circulant embedding + FFTW
-src/hmatrix/        Algorithm 3: H-matrix + rSVD (rsvd.hpp = Halko et al. Alg 4.4)
-benchmarks/         Timing + accuracy runner; CSV results
-plots/              Python visualization with fitted complexity constants
-```
+| Python (uv) | Calibration, validation, plotting | `uv add pandas numpy scipy matplotlib seaborn yfinance` |
 
 ---
 
 ## References
 
 | Paper | Role in this project |
-|---|---|
-| Gatheral, Jaisson & Rosenbaum (2014). *Volatility is rough.* arXiv:1410.3394 | Empirical basis for $H \approx 0.1$; RFSV model definition; calibration method |
-| Halko, Martinsson & Tropp (2011). *Finding structure with randomness.* SIAM Review 53(2) | Algorithm 4.4 (rSVD with power iteration) implemented in `rsvd.hpp` |
-| Candès, Demanet & Ying (2008). *A fast butterfly algorithm for Fourier integral operators.* arXiv:0809.0719 | Theoretical basis for low-rank structure of smooth off-diagonal kernel blocks |
-| Bennedsen, Lunde & Pakkanen (2017). *Hybrid scheme for Brownian semistationary processes.* arXiv:1507.03004 | Better simulation scheme for rough kernels ($H < \tfrac{1}{2}$); identified as future work |
+|-------|---------------------|
+| Gatheral, Jaisson & Rosenbaum (2014). *Volatility is rough.* | Empirical $H \approx 0.1$; RFSV model definition; calibration method |
+| Halko, Martinsson & Tropp (2011). *Finding structure with randomness.* SIAM Review 53(2) | Algorithm 4.4 (rSVD with power iteration) in `rsvd.hpp` |
+| Candès, Demanet & Ying (2008). *A fast butterfly algorithm for Fourier integral operators.* | Theoretical basis for low-rank off-diagonal blocks in smooth kernels |
+| Bennedsen, Lunde & Pakkanen (2017). *Hybrid scheme for Brownian semistationary processes.* | Better simulation for rough kernels; identified as future work |

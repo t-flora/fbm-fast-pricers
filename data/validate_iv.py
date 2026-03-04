@@ -5,7 +5,7 @@ Compares RFSV-model European call implied volatilities against SPY market IVs.
 
 Steps:
   1. Download SPY spot + option chain for the two nearest expirations (via yfinance)
-  2. Filter to liquid calls with valid bid/ask around ATM (±40% of spot)
+  2. Filter to liquid calls with valid bid/ask around ATM (+/-40% of spot)
   3. Compute market IV via Black-Scholes inversion (scipy.brentq)
   4. Price RFSV European calls (numpy circulant-FFT Monte Carlo)
   5. Convert RFSV prices to IVs via the same BS inversion
@@ -16,10 +16,64 @@ SPY is used here as the most liquid proxy; dividend effects are small on
 short-dated options and are ignored in this pedagogical comparison.
 
 Usage:
-    uv run python data/validate_iv.py [--M 5000] [--N 63]
+    uv run python data/validate_iv.py [--M 3000] [--N 63]
 
 Output:
     plots/validate_iv.png
+
+──────────────────────────────────────────────────────────────────────────
+BEGINNER'S GUIDE
+──────────────────────────────────────────────────────────────────────────
+
+What is implied volatility (IV)?
+
+  Black-Scholes gives a formula BS(S, K, T, r, sigma) for a European call.
+  "Implied volatility" is the unique sigma that makes BS() equal to the
+  observed market price.  It is found by numerical root-finding (brentq),
+  not by an analytical formula.
+
+  Traders quote options in IV rather than price because IV strips out
+  moneyness and maturity, making options across strikes directly comparable.
+
+What is the IV smile?
+
+  Under Black-Scholes (constant sigma), all options with the same underlying
+  and maturity should have the same IV — a flat smile.  In practice they don't:
+  OTM puts have higher IV than ATM calls.  This "smile" or "skew" is evidence
+  that returns have fatter tails and negative skew compared to lognormal.
+
+  RFSV generates a characteristic steep ATM skew with slope proportional to
+  T^{H - 0.5} as T -> 0.  For H=0.1, the slope diverges as T -> 0 much faster
+  than classical stochastic vol models (Heston: slope ~ T^0.5).
+
+Why do we calibrate mu0?
+
+  Our RFSV model has sigma_0 = exp(nu * 0) = 1.0 (100% vol at t=0).
+  SPY's actual vol is ~15%.  If we plotted IVs directly, the model would be 6x
+  too high and the shape comparison would be impossible.
+
+  We add a log-vol drift: log sigma_t = mu0 + nu * W_t^H.
+  Calibrating mu0 to match the market ATM price aligns the curves at ATM so
+  we compare only smile *shape* (slope, curvature), not vol level.
+  mu0 = log(sigma_eff), so sigma_eff = exp(mu0) is the effective vol level.
+
+Why is RFSV IV undefined (NaN) for deep ITM calls?
+
+  A deep-ITM call's price approaches its intrinsic value S - K * e^{-rT}.
+  When our RFSV MC price is at or below intrinsic, no sigma can explain it
+  via Black-Scholes (all BS prices exceed intrinsic for sigma > 0).
+  brentq raises an exception and we get NaN.  We shade this region rather
+  than leaving a confusing gap.
+
+Calibration uncertainty:
+  calibrate_mu0 uses M paths (same as the full run).  The uncertainty in mu0
+  is roughly sigma_MC / (ATM_vega * sqrt(M)).  At M=3000, sigma_MC ~ 0.6,
+  typical ATM vega ~ 15, so mu0 uncertainty ~ ±0.01 in log-vol — acceptable
+  for smile shape comparison but too noisy for precise level estimation.
+
+Contested point: we use r=0.  In practice SPY pays dividends (~1.5%) and the
+  risk-free rate is nonzero (~5% in 2025).  Dividend-adjusted BS would
+  improve accuracy but is omitted for pedagogical simplicity.
 """
 
 import argparse
@@ -120,7 +174,12 @@ def calibrate_mu0(calls_df: pd.DataFrame, spot: float, H: float, nu: float,
     target_price = bs_call_price(spot, K_atm, T_atm, R, iv_mkt)
     N = max(int(round(N_per_year * T_atm)), 5)
 
-    # Binary search over mu0 to match ATM price
+    # Brentq root-finding: find mu0 such that RFSV price = target ATM price.
+    # brentq requires a sign change in residual over [lo, hi].
+    # We bracket mu0 in [log(sigma_mkt) - 3, log(sigma_mkt) + 3], which spans
+    # roughly sigma_eff in [0.05 * sigma_mkt, 20 * sigma_mkt] — wide enough.
+    # xtol=0.01 means we stop when |mu0_hi - mu0_lo| < 0.01, giving sigma_eff
+    # to within ~1% relative error (e^0.01 ≈ 1.01).
     from scipy.optimize import brentq as _brentq
 
     def residual(mu0):
@@ -131,9 +190,8 @@ def calibrate_mu0(calls_df: pd.DataFrame, spot: float, H: float, nu: float,
         return p - target_price
 
     try:
-        # Initial vol level implied by market, used as starting guess
         sigma_mkt = iv_mkt
-        mu0_guess = np.log(sigma_mkt)
+        mu0_guess = np.log(sigma_mkt)  # log(market IV) is the natural starting point
         mu0 = _brentq(residual, mu0_guess - 3.0, mu0_guess + 3.0, xtol=0.01)
         print(f"  ATM calibration: market_IV={iv_mkt:.3f}  mu0={mu0:.3f}  "
               f"(sigma_0={np.exp(mu0):.3f})")
