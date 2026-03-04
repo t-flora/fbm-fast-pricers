@@ -166,37 +166,70 @@ def compute_rfsv_ivs(calls_df: pd.DataFrame, spot: float,
     return calls_df
 
 
-def plot_iv_smiles(dfs: list, spot: float, out_path: str):
+def plot_iv_smiles(dfs: list, spot: float, out_path: str, mu0s: dict = None):  # type: ignore[assignment]
     n = len(dfs)
-    fig, axes = plt.subplots(1, n, figsize=(7 * n, 5), sharey=False)
+    fig, axes = plt.subplots(1, n, figsize=(7 * n, 5), sharey=False,
+                             constrained_layout=True)
     if n == 1:
         axes = [axes]
 
+    mu0s = mu0s or {}
+
     for ax, df in zip(axes, dfs):
         exp = df["expiry"].iloc[0]
-        T = df["T"].iloc[0]
+        T   = df["T"].iloc[0]
+        mu0 = mu0s.get(exp, 0.0)
+        sigma_eff = np.exp(mu0)
         moneyness = df["strike"] / spot
 
+        # Shaded "intrinsic region" where deep-ITM prices give no IV
+        rfsv_nan = df[df["rfsv_iv"].isna()]
+        if not rfsv_nan.empty:
+            cutoff = (rfsv_nan["strike"].max()) / spot
+            ax.axvspan(moneyness.min() - 0.01, cutoff,
+                       alpha=0.08, color="#e74c3c",
+                       label="RFSV IV undefined (intrinsic)")
+
         # Market IV
-        ax.scatter(moneyness, df["market_iv"], color="#2980b9", s=40, zorder=3,
+        ax.scatter(moneyness, df["market_iv"] * 100, color="#2980b9", s=40, zorder=3,
                    label="Market IV (SPY)")
 
         # RFSV IV — filter NaN before plotting
         rfsv_ok = df.dropna(subset=["rfsv_iv"])
         if not rfsv_ok.empty:
-            ax.plot(rfsv_ok["strike"] / spot, rfsv_ok["rfsv_iv"],
+            ax.plot(rfsv_ok["strike"] / spot, rfsv_ok["rfsv_iv"] * 100,
                     color="#e74c3c", linewidth=2, marker="o", markersize=4,
                     label=f"RFSV IV (H={H_CALIB}, nu={NU_CALIB})")
 
         ax.axvline(1.0, color="gray", linestyle=":", linewidth=1, alpha=0.6)
-        ax.set_xlabel("Moneyness K/S")
-        ax.set_ylabel("Implied Volatility")
-        ax.set_title(f"IV Smile — expiry {exp}\n(T = {T:.3f} yr)")
-        ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1, decimals=0))
+        ax.set_xlabel("Moneyness  K/S")
+        ax.set_ylabel("Implied Volatility (%)")
+        ax.set_title(
+            f"IV Smile — expiry {exp}  (T={T:.3f} yr)\n"
+            f"RFSV scaled to  σ_eff={sigma_eff:.3f}"
+        )
+
+        # x-axis: round moneyness ticks
+        ax.set_xticks([0.80, 0.90, 1.00, 1.10, 1.20])
+
+        # y-axis: integer % gridlines at 10, 15, 20, 25
+        iv_vals = pd.concat([df["market_iv"].dropna(), df["rfsv_iv"].dropna()]) * 100
+        if not iv_vals.empty:
+            y_lo = max(iv_vals.min() * 0.90, 5.0)
+            y_hi = iv_vals.max() * 1.10
+            ax.set_ylim(y_lo, y_hi)
+        ax.yaxis.set_major_locator(mticker.MultipleLocator(5))
+        ax.yaxis.set_minor_locator(mticker.MultipleLocator(1))
+        ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%d%%"))
+        ax.grid(True, which="major", alpha=0.4)
+        ax.grid(True, which="minor", alpha=0.15)
+
         ax.legend(fontsize=9)
 
-    fig.suptitle("RFSV Model vs SPY Market Implied Volatility", fontsize=13, y=1.02)
-    plt.tight_layout()
+    fig.suptitle(
+        f"RFSV Model vs SPY Market Implied Volatility  (H={H_CALIB}, nu={NU_CALIB})",
+        fontsize=13,
+    )
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"\n  Saved: {out_path}")
     plt.close()
@@ -223,6 +256,7 @@ def main():
         sys.exit(1)
 
     enriched_dfs = []
+    mu0s = {}
     for df in chain_dfs:
         exp = df["expiry"].iloc[0]
         T = df["T"].iloc[0]
@@ -232,15 +266,19 @@ def main():
         df = compute_market_ivs(df, spot)
         print(f"  {len(df)} options with valid market IV")
 
+        # calibrate_mu0 uses M paths for the ATM price (same as the full run).
+        # At M=3000 the ATM price has std ≈ σ_payoff/√M ≈ 35/55 ≈ 0.6, so
+        # mu0 uncertainty is roughly ±0.01 in log-vol units.
         print("  Calibrating mu0 (log-vol level) to ATM market IV ...")
         mu0 = calibrate_mu0(df, spot, H_CALIB, NU_CALIB, args.M, args.N)
+        mu0s[exp] = mu0
 
         print("  Pricing RFSV European calls ...")
         df = compute_rfsv_ivs(df, spot, H_CALIB, NU_CALIB, args.M, args.N, mu0=mu0)
         enriched_dfs.append(df)
 
     print("\nPlotting ...")
-    plot_iv_smiles(enriched_dfs, spot, out_path)
+    plot_iv_smiles(enriched_dfs, spot, out_path, mu0s=mu0s)
 
     # Print summary table
     for df in enriched_dfs:

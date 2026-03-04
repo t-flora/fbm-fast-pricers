@@ -45,32 +45,45 @@ STRIKES = np.array([70, 80, 90, 95, 100, 105, 110, 120, 130], dtype=float)
 
 # H values to sweep
 H_VALUES = {
-    "H=0.05 (very rough)":  0.05,
-    "H=0.10 (calibrated)":  0.10,
-    "H=0.30 (moderately rough)": 0.30,
-    "H=0.50 (smooth / Brownian)": 0.50,
+    "H=0.05": 0.05,
+    "H=0.10*": 0.10,
+    "H=0.30": 0.30,
+    "H=0.50": 0.50,
 }
 
 H_COLORS = {
-    "H=0.05 (very rough)":        "#8e44ad",
-    "H=0.10 (calibrated)":        "#e74c3c",
-    "H=0.30 (moderately rough)":  "#e67e22",
-    "H=0.50 (smooth / Brownian)": "#27ae60",
+    "H=0.05":  "#8e44ad",
+    "H=0.10*": "#e74c3c",
+    "H=0.30":  "#e67e22",
+    "H=0.50":  "#27ae60",
 }
 
+# * = calibrated value (H=0.10)
 
-def run_rfsv_sweep(Ks, H_values, nu, N, M):
-    """Compute RFSV Asian call prices for each (H, K) combination."""
-    results = {}
+
+def run_rfsv_sweep(Ks, H_values, nu, N, M, n_seeds=3):
+    """
+    Compute RFSV Asian call prices for each (H, K) combination.
+
+    Runs n_seeds independent replications per (H, K) to estimate MC std-error.
+    Returns (means_dict, stds_dict); stds_dict values are None if n_seeds==1.
+    """
+    means = {}
+    stds  = {}
     for label, H in H_values.items():
-        prices = []
         print(f"  {label} ...")
+        prices_per_K = []
         for i, K in enumerate(Ks):
-            p = price_asian_call(H=H, nu=nu, K=K, T=T, S0=S0, r=R,
-                                 N=N, M=M, seed=42 + i)
-            prices.append(p)
-        results[label] = np.array(prices)
-    return results
+            seed_prices = [
+                price_asian_call(H=H, nu=nu, K=K, T=T, S0=S0, r=R,
+                                 N=N, M=M, seed=42 + i + 100 * s)
+                for s in range(n_seeds)
+            ]
+            prices_per_K.append(seed_prices)
+        arr = np.array(prices_per_K)          # (len(Ks), n_seeds)
+        means[label] = arr.mean(axis=1)
+        stds[label]  = arr.std(axis=1, ddof=1) if n_seeds > 1 else None
+    return means, stds
 
 
 def run_levy_benchmark(Ks, sigma, N):
@@ -78,59 +91,70 @@ def run_levy_benchmark(Ks, sigma, N):
     return np.array([levy_asian_call(S0, K, T, R, sigma, N) for K in Ks])
 
 
-def plot_validation(Ks, levy_prices, rfsv_results, out_path):
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+def plot_validation(Ks, levy_prices, rfsv_means, rfsv_stds, out_path):
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
 
     # ── Panel (a): Price vs Strike ───────────────────────────────────────────
     ax = axes[0]
     ax.plot(Ks, levy_prices, color="black", linestyle="--", linewidth=2,
-            label="Levy approx. (sigma=1.0, constant vol)")
+            label="Levy (σ=1.0, constant vol)")
 
-    for label, prices in rfsv_results.items():
-        ax.plot(Ks, prices, color=H_COLORS[label], linewidth=2, marker="o",
-                markersize=5, label=f"RFSV {label}")
+    for label, prices in rfsv_means.items():
+        yerr = rfsv_stds.get(label)
+        ax.errorbar(Ks, prices, yerr=yerr, color=H_COLORS[label],
+                    linewidth=2, marker="o", markersize=5,
+                    capsize=3, elinewidth=1, label=f"RFSV {label}")
 
     ax.axvline(S0, color="gray", linestyle=":", linewidth=1, alpha=0.6, label="ATM (K=S0)")
     ax.set_xlabel("Strike K")
     ax.set_ylabel("Asian Call Price")
-    ax.set_title("Asian Call Price vs Strike\n(S0=100, T=1, nu=0.30)")
-    ax.legend(fontsize=8, loc="upper right")
+    ax.set_title("Asian Call Price vs Strike\n(S0=100, T=1, ν=0.30)")
+    ax.legend(fontsize=8.5, loc="upper right")
+    ax.annotate("* calibrated  † error bars = ±1σ MC (3 seeds)",
+                xy=(0.01, 0.01), xycoords="axes fraction", fontsize=7.5, alpha=0.7)
 
     # ── Panel (b): Roughness Premium ─────────────────────────────────────────
     ax2 = axes[1]
-    label_h01 = "H=0.10 (calibrated)"
-    label_h05 = "H=0.50 (smooth / Brownian)"
+    label_h01 = "H=0.10*"
+    label_h05 = "H=0.50"
 
-    if label_h01 in rfsv_results and label_h05 in rfsv_results:
-        premium = rfsv_results[label_h01] - rfsv_results[label_h05]
+    if label_h01 in rfsv_means and label_h05 in rfsv_means:
+        premium = rfsv_means[label_h01] - rfsv_means[label_h05]
         ax2.bar(Ks, premium, color="#e74c3c", alpha=0.75, edgecolor="black",
-                linewidth=0.6, width=4.0)
+                linewidth=0.6, width=2.5)
         ax2.axhline(0, color="black", linewidth=0.8)
         ax2.set_xlabel("Strike K")
-        ax2.set_ylabel("Price difference")
-        ax2.set_title("Roughness Premium\nRFSV(H=0.10) - RFSV(H=0.50)")
+        ax2.set_ylabel("Roughness premium (H=0.10 − H=0.50)")
+        ax2.set_title("Roughness Premium\nRFSV(H=0.10) − RFSV(H=0.50)")
+
+        # Annotation offset as fraction of y-range to avoid clipping
+        y_vals = premium[premium != 0]
+        y_range = premium.max() - premium.min() if len(y_vals) > 0 else 1.0
+        offset = 0.03 * abs(y_range)
         for x, y in zip(Ks, premium):
             sign = "+" if y >= 0 else ""
-            ax2.text(x, y + (0.02 if y >= 0 else -0.06), f"{sign}{y:.2f}",
-                     ha="center", va="bottom", fontsize=8)
+            va_dir = "bottom" if y >= 0 else "top"
+            y_txt  = y + offset if y >= 0 else y - offset
+            ax2.text(x, y_txt, f"{sign}{y:.2f}",
+                     ha="center", va=va_dir, fontsize=8)
 
-    plt.tight_layout()
     fig.savefig(out_path, dpi=150)
     print(f"  Saved: {out_path}")
     plt.close()
 
 
-def print_table(Ks, levy_prices, rfsv_results):
+def print_table(Ks, levy_prices, rfsv_means, rfsv_stds):
     print(f"\n  {'Strike':>8} {'Levy':>8}", end="")
-    for label in rfsv_results:
-        short = label.split("(")[0].strip()
-        print(f" {short:>14}", end="")
+    for label in rfsv_means:
+        print(f" {label:>14}", end="")
     print()
     for i, K in enumerate(Ks):
         atm = " <ATM>" if K == S0 else ""
         print(f"  {K:>8.0f} {levy_prices[i]:>8.3f}", end="")
-        for prices in rfsv_results.values():
-            print(f" {prices[i]:>14.3f}", end="")
+        for label, prices in rfsv_means.items():
+            std = rfsv_stds.get(label)
+            std_str = f"±{std[i]:.2f}" if std is not None else ""
+            print(f" {prices[i]:>7.3f}{std_str:>6}", end="")
         print(atm)
 
 
@@ -149,14 +173,14 @@ def main():
     print("\nComputing Levy benchmark (sigma=1.0) ...")
     levy_prices = run_levy_benchmark(STRIKES, sigma=1.0, N=args.N)
 
-    print("\nComputing RFSV prices ...")
-    rfsv_results = run_rfsv_sweep(STRIKES, H_VALUES, NU, args.N, args.M)
+    print("\nComputing RFSV prices (3 seeds for ±1σ error bars) ...")
+    rfsv_means, rfsv_stds = run_rfsv_sweep(STRIKES, H_VALUES, NU, args.N, args.M)
 
     print("\nPrice table:")
-    print_table(STRIKES, levy_prices, rfsv_results)
+    print_table(STRIKES, levy_prices, rfsv_means, rfsv_stds)
 
     print("\nPlotting ...")
-    plot_validation(STRIKES, levy_prices, rfsv_results, out_path)
+    plot_validation(STRIKES, levy_prices, rfsv_means, rfsv_stds, out_path)
 
 
 if __name__ == "__main__":
