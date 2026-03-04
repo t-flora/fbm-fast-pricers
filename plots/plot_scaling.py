@@ -2,8 +2,9 @@
 Block 5: Generate scaling plots from benchmark CSVs.
 
 Figures produced:
-  1. time_vs_N.png    — wall-clock time vs N (log-log) with fitted c·N^α constants
-  2. error_vs_rank.png — Frobenius and price error vs rSVD rank k (dual y-axis)
+  1. time_vs_N.png    — wall-clock time vs N (log-log) with fitted c·N^α lines
+  2. error_vs_rank.png — Frobenius and relative price error vs rSVD rank k
+                         (shared log-scale y-axis, MC noise floor annotated)
 
 Usage:
     uv run python plots/plot_scaling.py [--results-dir benchmarks/results]
@@ -28,26 +29,33 @@ METHOD_STYLE = {
     "hmatrix":  {"label": "H-matrix+rSVD (k=32)",  "marker": "^", "color": "#3498db"},
 }
 
-# Theoretical exponents for reference lines
 THEORY_EXP = {
     "cholesky": 3.0,
-    "fft":      1.0,   # O(N log N) ≈ O(N) for this range
-    "hmatrix":  1.0,   # construction O(Nk²) + per-path O(Nk)
+    "fft":      1.0,
+    "hmatrix":  1.0,
 }
+
 
 def fit_power_law(Ns, times):
     """Fit t = c * N^alpha via OLS on log-log scale. Returns (c, alpha, R^2)."""
     log_N = np.log(Ns)
     log_t = np.log(times)
     slope, intercept, r, _, _ = stats.linregress(log_N, log_t)
-    return np.exp(intercept), slope, r**2
+    return np.exp(intercept), slope, r ** 2
 
 
 def plot_time_vs_N(df: pd.DataFrame, out_path: str):
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-
-    ax = axes[0]  # wall-clock time (log-log)
+    M_paths = int(df["M_paths"].iloc[0]) if "M_paths" in df.columns else 10_000
     Ns_all = np.sort(df["N"].unique()).astype(float)
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
+    fig.text(
+        0.5, 1.01,
+        f"Benchmark: M={M_paths:,} paths,  N in {{{', '.join(str(int(n)) for n in Ns_all)}}}",
+        ha="center", fontsize=10, style="italic",
+    )
+
+    ax = axes[0]
     N_range = np.logspace(np.log10(Ns_all.min()), np.log10(Ns_all.max()), 200)
 
     fit_results = {}
@@ -55,24 +63,35 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
         sub = df[df["method"] == method].sort_values("N")
         if sub.empty:
             continue
-        Ns = sub["N"].values.astype(float)
+        Ns    = sub["N"].values.astype(float)
         times = sub["wall_time_s"].values
         c, alpha, r2 = fit_power_law(Ns, times)
         fit_results[method] = (c, alpha, r2)
-        label = f"{style['label']}  [fit: {c:.2e}·N^{{{alpha:.2f}}}]"
+
+        # Data points
         ax.loglog(Ns, times, marker=style["marker"], color=style["color"],
-                  label=label, linewidth=2, markersize=8)
-        ax.loglog(N_range, c * N_range**alpha, linestyle="--",
-                  color=style["color"], alpha=0.5, linewidth=1)
+                  label=style["label"], linewidth=2, markersize=8)
+        # Fitted dashed line with legend entry
+        ax.loglog(N_range, c * N_range ** alpha, linestyle="--",
+                  color=style["color"], alpha=0.65, linewidth=1.2,
+                  label=f"  {c:.2e}·N^{alpha:.2f} fit")
+        # Annotate R² at the end of the fit line
+        ax.annotate(
+            f"$R^2$={r2:.3f}",
+            xy=(N_range[-1], c * N_range[-1] ** alpha),
+            fontsize=7, color=style["color"],
+            ha="left", va="center",
+            xytext=(4, 0), textcoords="offset points",
+        )
 
     ax.set_xlabel("Path resolution N")
     ax.set_ylabel("Wall-clock time (s)")
     ax.set_title("Scaling: Wall-clock Time vs N")
-    ax.legend(fontsize=8, loc="upper left")
+    ax.legend(fontsize=7.5, loc="upper left", ncol=1)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
 
-    # Second panel: fitted exponents with error bars and theoretical lines
-    ax2 = axes[1]
+    # ── Second panel: fitted exponents ────────────────────────────────────────
+    ax2   = axes[1]
     methods = list(fit_results.keys())
     alphas  = [fit_results[m][1] for m in methods]
     colors  = [METHOD_STYLE[m]["color"] for m in methods]
@@ -80,34 +99,34 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
     r2s     = [fit_results[m][2] for m in methods]
     labels  = [METHOD_STYLE[m]["label"] for m in methods]
 
-    x = np.arange(len(methods))
+    x    = np.arange(len(methods))
     bars = ax2.bar(x, alphas, color=colors, alpha=0.85, edgecolor="black", linewidth=0.8)
     for xi, (th, r2) in enumerate(zip(theory, r2s)):
         if th is not None:
             ax2.axhline(th, xmin=(xi - 0.4) / len(methods),
                         xmax=(xi + 0.4) / len(methods),
                         color="black", linestyle=":", linewidth=1.5, alpha=0.7)
-        ax2.text(xi, alphas[xi] + 0.05, f"R²={r2:.3f}", ha="center", fontsize=9)
+        ax2.text(xi, alphas[xi] + 0.05, f"$R^2$={r2:.3f}", ha="center", fontsize=9)
 
     ax2.set_xticks(x)
     ax2.set_xticklabels(labels, rotation=15, ha="right", fontsize=10)
     ax2.set_ylabel("Fitted exponent α  (t ≈ c·N^α)")
-    ax2.set_title("Fitted Complexity Exponents\n(dashed = theoretical)")
-    ax2.set_ylim(0, max(alphas) * 1.3)
+    ax2.set_title(
+        "Fitted Complexity Exponents\n"
+        "(dotted = theoretical; note: Cholesky dominated by O(M·N²) per-path cost)"
+    )
+    ax2.set_ylim(0, max(alphas) * 1.35)
 
-    # Annotate constants
     for bar, m in zip(bars, methods):
         c = fit_results[m][0]
-        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() / 2,
+        ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() / 2,
                  f"c={c:.2e}", ha="center", va="center",
                  color="white", fontsize=9, fontweight="bold")
 
-    plt.tight_layout()
     fig.savefig(out_path, dpi=150)
     print(f"  Saved: {out_path}")
     plt.close()
 
-    # Print fit summary to stdout
     print("\n  Complexity constant estimates (t = c · N^α):")
     print(f"  {'Method':<20} {'c':>12} {'α':>8} {'R²':>8}")
     for m in methods:
@@ -116,39 +135,222 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
 
 
 def plot_error_vs_rank(df: pd.DataFrame, out_path: str):
-    fig, ax1 = plt.subplots(figsize=(8, 5))
-    ax2 = ax1.twinx()
+    ref_price = df["reference_price"].iloc[0]
+    N_val     = df["N"].iloc[0]
+    # Infer M_paths from time_vs_N if available, else use known default
+    M_paths   = 10_000
 
-    ks = df["rank_k"].values
+    ks             = df["rank_k"].values
+    frob_pct       = df["frob_error"] * 100
+    rel_price_pct  = df["rel_price_error"] * 100
 
-    # Frobenius error (left axis, primary — noise-free metric)
-    if "frob_error" in df.columns:
-        ax1.semilogy(ks, df["frob_error"] * 100, marker="D", color="#9b59b6",
-                     linewidth=2, markersize=7, label="Frobenius error ||C-Ck||/||C|| (%)")
-        ax1.set_ylabel("Frobenius norm error (%)", color="#9b59b6")
-        ax1.tick_params(axis="y", labelcolor="#9b59b6")
+    # MC noise floor: mean absolute price error over the 3 highest-rank rows
+    # (at high rank, Frobenius error is small so price error is mostly MC noise)
+    noise_abs = df["abs_price_error"].iloc[-3:].mean()
+    noise_pct = noise_abs / ref_price * 100
 
-    # Price error (right axis)
-    if "abs_price_error" in df.columns:
-        ax2.plot(ks, df["abs_price_error"], marker="o", color="#e74c3c",
-                 linewidth=2, markersize=7, linestyle="--",
-                 label="|price − reference|")
-        ax2.set_ylabel("|Price error|  (absolute)", color="#e74c3c")
-        ax2.tick_params(axis="y", labelcolor="#e74c3c")
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    fig.text(
+        0.5, 1.01,
+        f"N={N_val}, M={M_paths:,} paths,  reference = avg of 500k Cholesky + FFT paths",
+        ha="center", fontsize=10, style="italic",
+    )
 
-    # MC noise floor
-    ax2.axhline(0.4, color="#e74c3c", linestyle=":", alpha=0.5, linewidth=1,
-                label="MC noise floor (≈1σ, M=10k)")
+    ax.semilogy(ks, frob_pct, marker="D", color="#9b59b6",
+                linewidth=2, markersize=7,
+                label=r"Frobenius  $\|C - C_k\|_F \,/\, \|C\|_F$  (noise-free)")
+    ax.semilogy(ks, rel_price_pct, marker="o", color="#e74c3c",
+                linewidth=2, markersize=7, linestyle="--",
+                label=r"$|\hat{p}_k - p_{\rm ref}| \,/\, p_{\rm ref}$  (price, MC-noisy)")
+    ax.axhline(noise_pct, color="#e74c3c", linestyle=":", alpha=0.6, linewidth=1.5,
+               label=f"MC noise floor ≈ {noise_pct:.1f}%  (M={M_paths:,})")
 
-    ax1.set_xlabel("rSVD target rank k")
-    ax1.set_title(f"H-matrix Approximation Quality vs Rank\n"
-                  f"(N={df['N'].iloc[0]}, reference = avg of 500k Cholesky + FFT paths)")
+    ax.set_xlabel("rSVD target rank k")
+    ax.set_ylabel("Relative error (%)")
+    ax.set_title(
+        "H-matrix Approximation Quality vs Rank\n"
+        "Both metrics on shared log-scale — MC noise dominates price error at high rank"
+    )
+    ax.legend(fontsize=9, loc="upper right")
+    ax.grid(True, which="both", alpha=0.4)
 
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=9, loc="upper right")
+    fig.savefig(out_path, dpi=150)
+    print(f"  Saved: {out_path}")
+    plt.close()
 
-    plt.tight_layout()
+
+def plot_construction_breakdown(df: pd.DataFrame, out_path: str):
+    """
+    Stacked bar chart: construction (one-time setup) vs MC loop time.
+
+    Separates the per-method one-time setup cost from the per-path Monte Carlo cost:
+      - Cholesky:  covariance matrix build + LLT factorization (construction) vs M·N² MC loop
+      - FFT:       fGn eigenvalue computation + FFTW plan creation  (negligible) vs M·N·logN MC
+      - H-matrix:  covariance build + rSVD (non-trivial)  vs  M·N·k MC loop
+
+    Requires time_vs_N.csv to have construction_time_s and mc_time_s columns.
+    """
+    if "construction_time_s" not in df.columns or "mc_time_s" not in df.columns:
+        print("  Skipping construction breakdown (CSV missing timing columns — rerun benchmark).")
+        return
+
+    M_paths = int(df["M_paths"].iloc[0]) if "M_paths" in df.columns else 10_000
+    Ns      = np.sort(df["N"].unique()).astype(int)
+    methods = [m for m in ["cholesky", "fft", "hmatrix"] if m in df["method"].values]
+    n_m     = len(methods)
+
+    fig, ax = plt.subplots(figsize=(10, 5), constrained_layout=True)
+    fig.text(
+        0.5, 1.01,
+        f"Construction vs MC time  (M={M_paths:,} paths)",
+        ha="center", fontsize=10, style="italic",
+    )
+
+    bar_w = 0.25
+    x     = np.arange(len(Ns))
+
+    for mi, method in enumerate(methods):
+        style = METHOD_STYLE[method]
+        sub   = df[df["method"] == method].sort_values("N")
+        tc    = sub["construction_time_s"].values
+        tmc   = sub["mc_time_s"].values
+        offset = (mi - n_m / 2.0 + 0.5) * bar_w
+
+        # Construction (light)
+        ax.bar(x + offset, tc, bar_w,
+               color=style["color"], alpha=0.35, edgecolor="black", linewidth=0.5)
+        # MC loop (dark)
+        ax.bar(x + offset, tmc, bar_w, bottom=tc,
+               color=style["color"], alpha=0.90, edgecolor="black", linewidth=0.5,
+               label=style["label"])
+
+        # Annotate construction % above each bar
+        for i, (tc_i, tmc_i) in enumerate(zip(tc, tmc)):
+            total  = tc_i + tmc_i
+            pct    = tc_i / total * 100 if total > 0 else 0
+            ax.text(x[i] + offset, total * 1.03, f"{pct:.1f}%",
+                    ha="center", fontsize=7, color=style["color"])
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"N={n}" for n in Ns])
+    ax.set_ylabel("Wall-clock time (s)")
+    ax.set_title(
+        "One-time Setup vs Per-path Monte Carlo Cost\n"
+        "Light portion = construction;  dark = MC loop;  % = construction fraction",
+        fontsize=10,
+    )
+    ax.legend(fontsize=9, title="Method")
+
+    # Custom patch legend for light/dark
+    from matplotlib.patches import Patch
+    legend_patches = [
+        Patch(facecolor="gray", alpha=0.35, edgecolor="black", label="construction (setup)"),
+        Patch(facecolor="gray", alpha=0.90, edgecolor="black", label="MC loop (per-path)"),
+    ]
+    ax.legend(handles=legend_patches + [
+        plt.Line2D([0], [0], color=METHOD_STYLE[m]["color"], lw=3, label=METHOD_STYLE[m]["label"])
+        for m in methods
+    ], fontsize=8, ncol=2)
+
+    fig.savefig(out_path, dpi=150)
+    print(f"  Saved: {out_path}")
+    plt.close()
+
+
+def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
+    """
+    Two-panel memory plot from time_vs_N.csv:
+      (a) theoretical peak bytes vs N (log-log) — Cholesky O(N^2), FFT O(N), hmatrix variants
+      (b) estimated memory bandwidth utilization for Cholesky (GB/s vs rated 100 GB/s)
+    """
+    L3_MB = 16.0
+    BANDWIDTH_GBS = 100.0
+
+    # Only rows with memory columns
+    if "theoretical_peak_mb" not in df.columns:
+        print("  Skipping memory plot (theoretical_peak_mb column missing).")
+        return
+
+    # Exclude hmatrix_freed for the comparison panel (use theoretical_freed separately)
+    methods_plot = ["cholesky", "fft", "hmatrix", "hmatrix_freed"]
+    method_labels = {
+        "cholesky":     "Dense Cholesky  O(N²)",
+        "fft":          "Circulant+FFT   O(N)",
+        "hmatrix":      "H-matrix (C held)  O(N²)",
+        "hmatrix_freed": "H-matrix (C freed)  O(N·k)",
+    }
+    method_ls = {
+        "cholesky":      "-",
+        "fft":           "-",
+        "hmatrix":       "--",
+        "hmatrix_freed": ":",
+    }
+
+    Ns_all = np.sort(df["N"].unique()).astype(float)
+    M_paths = int(df["M_paths"].iloc[0]) if "M_paths" in df.columns else 10_000
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
+    fig.text(
+        0.5, 1.01,
+        f"Memory analysis  (M={M_paths:,} paths, L3={L3_MB:.0f} MB, M2 rated BW={BANDWIDTH_GBS:.0f} GB/s)",
+        ha="center", fontsize=10, style="italic",
+    )
+
+    # ── Panel (a): theoretical peak MB vs N ──────────────────────────────────
+    ax = axes[0]
+    N_range = np.logspace(np.log10(Ns_all.min()), np.log10(Ns_all.max()), 200)
+
+    for method in methods_plot:
+        sub = df[df["method"] == method].sort_values("N")
+        if sub.empty or "theoretical_peak_mb" not in sub.columns:
+            continue
+        color = METHOD_STYLE.get(method, {}).get("color", None)
+        if color is None:
+            color = "#95a5a6"  # gray for hmatrix_freed
+        ax.loglog(sub["N"], sub["theoretical_peak_mb"],
+                  marker="o", markersize=7, linewidth=2,
+                  linestyle=method_ls[method], color=color,
+                  label=method_labels[method])
+
+    # L3 threshold line
+    ax.axhline(L3_MB, color="#e74c3c", linestyle="--", linewidth=1.2,
+               alpha=0.7, label=f"L3 cache ({L3_MB:.0f} MB)")
+
+    # O(N) and O(N^2) guide lines
+    ax.loglog(N_range, 8e-6 * N_range, "lightgray", linewidth=1, linestyle="--")
+    ax.loglog(N_range, 8e-6 * N_range ** 2, "lightgray", linewidth=1, linestyle=":")
+
+    ax.set_xlabel("Path resolution N")
+    ax.set_ylabel("Theoretical peak memory (MB)")
+    ax.set_title("Peak Memory vs N\n(dashed = L3 threshold; Cholesky/hmatrix cross at N~1500)")
+    ax.legend(fontsize=8)
+    ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+
+    # ── Panel (b): Cholesky bandwidth utilization ─────────────────────────────
+    ax2 = axes[1]
+    chol = df[df["method"] == "cholesky"].sort_values("N")
+    if not chol.empty and "est_bandwidth_GBs" in chol.columns:
+        bw = chol["est_bandwidth_GBs"].values
+        Ns = chol["N"].values
+        ax2.bar(range(len(Ns)), bw, color=METHOD_STYLE["cholesky"]["color"],
+                alpha=0.8, edgecolor="black", linewidth=0.8)
+        ax2.axhline(BANDWIDTH_GBS, color="black", linestyle="--", linewidth=1.5,
+                    label=f"Rated M2 bandwidth ({BANDWIDTH_GBS:.0f} GB/s)")
+        for i, (n, b) in enumerate(zip(Ns, bw)):
+            ax2.text(i, b + 1, f"{b:.0f}", ha="center", fontsize=10)
+        ax2.set_xticks(range(len(Ns)))
+        ax2.set_xticklabels([f"N={n}" for n in Ns])
+        ax2.set_ylabel("Estimated bandwidth (GB/s)")
+        ax2.set_title(
+            "Cholesky Memory-Bandwidth Utilization\n"
+            "(bytes_accessed = N^2 * 8 * M  / wall_time_s)"
+        )
+        ax2.legend(fontsize=9)
+        ax2.set_ylim(0, BANDWIDTH_GBS * 1.15)
+    else:
+        ax2.text(0.5, 0.5, "est_bandwidth_GBs not available",
+                 ha="center", va="center", transform=ax2.transAxes)
+
     fig.savefig(out_path, dpi=150)
     print(f"  Saved: {out_path}")
     plt.close()
@@ -159,8 +361,7 @@ def main():
     parser.add_argument("--results-dir", default=RESULTS_DIR)
     args = parser.parse_args()
 
-    out_dir = os.path.join(os.path.dirname(__file__))
-
+    out_dir    = os.path.dirname(__file__)
     time_path  = os.path.join(args.results_dir, "time_vs_N.csv")
     error_path = os.path.join(args.results_dir, "error_vs_rank.csv")
 
@@ -168,6 +369,11 @@ def main():
         print("Plotting time_vs_N ...")
         df_time = pd.read_csv(time_path)
         plot_time_vs_N(df_time, os.path.join(out_dir, "time_vs_N.png"))
+        print("\nPlotting construction breakdown ...")
+        plot_construction_breakdown(df_time, os.path.join(out_dir, "construction_breakdown.png"))
+        if "theoretical_peak_mb" in df_time.columns:
+            print("\nPlotting memory vs N ...")
+            plot_memory_vs_N(df_time, os.path.join(out_dir, "memory_vs_N.png"))
     else:
         print(f"WARNING: {time_path} not found — run ./build/benchmark first.")
 

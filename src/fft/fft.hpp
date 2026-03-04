@@ -14,6 +14,7 @@
 //   5. log_vol = cumsum(x[0..N-1])  → fBM path; then simulate GBM prices
 
 #include <fftw3.h>
+#include <chrono>
 #include <complex>
 #include <vector>
 #include <numeric>
@@ -100,6 +101,72 @@ double price(int N, int M_paths, unsigned seed = 42) {
 
     fftw_destroy_plan(plan_inv);
     return std::exp(-r * T) * payoff_sum / M_paths;
+}
+
+// Construction vs MC timing breakdown
+struct FFTTimed { double price, t_construct, t_mc; };
+
+FFTTimed price_timed(int N, int M_paths, unsigned seed = 42) {
+    using namespace params;
+    using Clock = std::chrono::high_resolution_clock;
+    double dt = T / N;
+    int M = 2 * N;
+
+    auto t0 = Clock::now();
+    // ── Construction: build eigenvalues + create IFFT plan ───────────────────
+    std::vector<std::complex<double>> c_emb(M, 0.0);
+    for (int j = 0; j < N; ++j)
+        c_emb[j] = fgn_cov(j, H, dt);
+    for (int j = 1; j < N; ++j)
+        c_emb[M - j] = c_emb[j];
+
+    std::vector<std::complex<double>> lam(M);
+    {
+        fftw_plan p = fftw_plan_dft_1d(
+            M,
+            reinterpret_cast<fftw_complex*>(c_emb.data()),
+            reinterpret_cast<fftw_complex*>(lam.data()),
+            FFTW_FORWARD, FFTW_ESTIMATE);
+        fftw_execute(p);
+        fftw_destroy_plan(p);
+    }
+    for (int k = 0; k < M; ++k)
+        if (lam[k].real() < -1e-8)
+            throw std::runtime_error("fGn circulant embedding not PSD");
+
+    std::vector<std::complex<double>> w_buf(M), out_buf(M);
+    fftw_plan plan_inv = fftw_plan_dft_1d(
+        M,
+        reinterpret_cast<fftw_complex*>(w_buf.data()),
+        reinterpret_cast<fftw_complex*>(out_buf.data()),
+        FFTW_BACKWARD, FFTW_ESTIMATE);
+    double t_construct = std::chrono::duration<double>(Clock::now() - t0).count();
+
+    // ── MC loop ───────────────────────────────────────────────────────────────
+    auto rng = make_rng(seed);
+    std::normal_distribution<double> norm(0.0, 1.0);
+    double payoff_sum = 0.0;
+
+    t0 = Clock::now();
+    for (int m = 0; m < M_paths; ++m) {
+        for (int j = 0; j < M; ++j) {
+            double s = std::sqrt(std::max(lam[j].real(), 0.0) / M);
+            w_buf[j] = s * std::complex<double>(norm(rng), norm(rng));
+        }
+        fftw_execute(plan_inv);
+        std::vector<double> log_vol(N);
+        double acc = 0.0;
+        for (int i = 0; i < N; ++i) {
+            acc += out_buf[i].real();
+            log_vol[i] = nu * acc;
+        }
+        auto inno = randn(N, rng);
+        payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt), K);
+    }
+    double t_mc = std::chrono::duration<double>(Clock::now() - t0).count();
+
+    fftw_destroy_plan(plan_inv);
+    return { std::exp(-r * T) * payoff_sum / M_paths, t_construct, t_mc };
 }
 
 } // anonymous namespace
