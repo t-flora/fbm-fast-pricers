@@ -50,8 +50,20 @@ uv run python data/validate_asian.py [--M 5000] [--N 252]
 # → plots/validate_asian.png
 
 # Phase 3: H × nu sensitivity heatmap + price vs K curves
-uv run python plots/plot_sensitivity.py [--M 3000] [--N 252]
+uv run python plots/plot_sensitivity.py [--M 10000] [--N 252]
 # → plots/sensitivity_surface.png, plots/sensitivity_strike.png
+
+# Structural analysis: Toeplitz property + off-diagonal SVD decay
+uv run python plots/plot_structure.py [--N-small 64] [--N-large 128]
+# → plots/structure_analysis.png
+
+# MC convergence study: price ± 1σ vs M paths
+uv run python data/validate_convergence.py [--n-seeds 5] [--max-M 25000]
+# → plots/convergence.png
+
+# Construction vs MC time breakdown (requires benchmark CSV with new columns)
+uv run python plots/plot_scaling.py
+# → plots/time_vs_N.png, plots/error_vs_rank.png, plots/construction_breakdown.png
 ```
 
 ## Architecture
@@ -134,6 +146,35 @@ Fitted complexity constants (log-log regression over N = {252, 500, 1000}):
 - Cholesky: `t = 4.0e-5 · N^1.54` (dominated by O(M·N²) per-path cost, not O(N³) factorization)
 - FFT: `t = 9.2e-4 · N^1.03`
 - H-matrix k=32: `t = 2.9e-4 · N^1.06`
+
+## Project Evaluation Criteria
+
+This is a final project for a fast-algorithms course. Every experiment should be framed with explicit control/independent/dependent variables. The rubric (`include.md`) requires:
+
+1. **Runtime efficiency** — scaling benchmarks with fitted exponents (already done in `plot_scaling.py`)
+2. **Memory use** — peak RSS vs N for all three C++ methods + Python engine (`benchmarks/memory_benchmark.cpp` + `data/profile_memory.py`, planned)
+3. **Accuracy** — MC convergence: price ± 1σ vs M paths, confirm σ ∝ 1/√M log-log slope ≈ −0.5 (`data/validate_convergence.py`, planned)
+4. **Stability** — FFT eigenvalue clipping near H=0.5, rSVD condition number vs rank, Cholesky κ(C) vs N (`data/validate_stability.py`, planned)
+5. **Structural analysis** — *why* each method works: Toeplitz structure of fGn (→ FFT), low-rank off-diagonal structure of C(t,s) (→ H-matrix), singular value decay comparison H=0.1 vs H=0.5 (`plots/plot_structure.py`, planned)
+
+## Planned Scripts (not yet implemented)
+
+See `TODO.md` for full task descriptions and priority ordering. Summary of new files to create:
+
+| Script | Status | Purpose |
+|---|---|---|
+| `data/validate_convergence.py` | ✅ done | Price ± 1σ vs M ∈ {100..25k}, 5 seeds → `plots/convergence.png` |
+| `plots/plot_structure.py` | ✅ done | fGn Toeplitz heatmap + off-diagonal SVD decay → `plots/structure_analysis.png` |
+| `plots/construction_breakdown.png` | ✅ done | Stacked bar: setup vs MC time (via `price_timed()` in each .hpp) |
+| `data/validate_stability.py` | pending | FFT clipping vs H, rSVD conditioning vs rank, Cholesky κ(C) vs N |
+| `benchmarks/memory_benchmark.cpp` | pending | `getrusage` peak RSS added to `time_vs_N.csv` |
+| `data/profile_memory.py` | pending | `tracemalloc` peak allocation vs (N, M) for Python engine |
+
+**Production-quality run parameters** (use for final report plots):
+- `validate_asian.py`: `--M 10000 --N 252`, 5 seeds, mean ± std error bars
+- `validate_iv.py`: `--M 3000 --N 63`, calibration M=1000
+- `plot_sensitivity.py`: `--M 10000 --N 252` (noise floor ≈ 0.3)
+- `validate_convergence.py`: M up to 25000
 
 ## Background Papers
 
