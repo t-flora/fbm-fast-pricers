@@ -1,0 +1,184 @@
+## Data flow for the Rough Volatility Asian Option Pricer
+## Render with: d2 dataflow.d2 dataflow.svg
+## Install: brew install d2
+
+direction: right
+
+# ── Layer 1: Market data ─────────────────────────────────────────────────────
+
+oxford: |md
+## Oxford-Man Realized Library
+high-freq RV data
+| {shape: cylinder}
+
+yfinance: |md
+## yfinance
+free proxy via 5-day squared returns
+| {shape: cylinder}
+
+# ── Layer 2: Calibration ──────────────────────────────────────────────────────
+
+calibrate: |md
+## `calibrate.py`
+Fit log(RV) ~ H·log(lag)
+→ H ≈ 0.10, ν ≈ 0.30
+| {shape: rectangle}
+
+params: |md
+## `params.hpp`
+H, ν, S₀, K, T, r
+(constexpr; no runtime I/O)
+| {shape: document}
+
+oxford   -> calibrate
+yfinance -> calibrate: "alt."
+calibrate -> params: "paste values\n& rebuild"
+
+# ── Layer 3a: C++ engine ──────────────────────────────────────────────────────
+
+cpp: C++ Engine {
+  cov: |md
+## `covariance.hpp`
+Build N×N matrix C
+from fBM kernel (analytic)
+| {shape: rectangle}
+
+  alg1: |md
+## Algorithm 1 — Dense Cholesky
+`src/cholesky/cholesky.hpp`
+setup : C = LLᵀ — O(N³)
+per path: Lz — O(N²)
+| {shape: rectangle}
+
+  alg2: |md
+## Algorithm 2 — Circulant + FFTW
+`src/fft/fft.hpp`
+setup : FFT(γ) → λ — O(N log N)
+per path: IFFT(√λ·w) — O(N log N)
+| {shape: rectangle}
+
+  alg3: |md
+## Algorithm 3 — H-matrix + rSVD
+`src/hmatrix/hmatrix.hpp`
+setup : rSVD → Lₖ — O(Nk²)
+per path: Lₖz — O(Nk)
+| {shape: rectangle}
+
+  cov -> alg1
+  cov -> alg2: "fGn γ(k) only\n(not C itself)"
+  cov -> alg3
+}
+
+params -> cpp.cov
+
+# ── Layer 3b: Python engine ───────────────────────────────────────────────────
+
+py: |md
+## `rfsv_model.py`
+NumPy circulant-FFT engine
+(matches C++ FFTW convention)
+| {shape: rectangle}
+
+params -> py: "H, ν (imported)"
+
+# ── Layer 4: Benchmark runner ─────────────────────────────────────────────────
+
+bench: |md
+## `benchmark.cpp`
+Runs all three `price_timed()`
+across N ∈ {252, 500, 1000}, M = 10 000 paths
+| {shape: rectangle}
+
+cpp.alg1 -> bench
+cpp.alg2 -> bench
+cpp.alg3 -> bench
+
+# ── Layer 5: CSV outputs ──────────────────────────────────────────────────────
+
+csvs: benchmarks/results/ {
+  shape: cylinder
+
+  t: |md
+## `time_vs_N.csv`
+wall time, construction + MC split
+peak RSS, bandwidth estimate
+|
+
+  e: |md
+## `error_vs_rank.csv`
+Frobenius ‖C−Cₖ‖_F/‖C‖_F
+price error vs p_ref
+|
+
+  r: |md
+## `reference_price.txt`
+p_ref = 23.58
+avg of 500k-path Chol + 500k-path FFT
+|
+}
+
+bench -> csvs.t
+bench -> csvs.e
+bench -> csvs.r
+
+# ── Layer 6: Analysis & plots ─────────────────────────────────────────────────
+
+scaling: |md
+## `plot_scaling.py`
+→ time_vs_N.png
+→ construction_breakdown.png
+→ memory_vs_N.png, error_vs_rank.png
+| {shape: rectangle}
+
+structure: |md
+## `plot_structure.py`
+→ structure_analysis.png
+Toeplitz heatmaps + off-diagonal SVD decay
+| {shape: rectangle}
+
+sensitivity: |md
+## `plot_sensitivity.py`
+→ sensitivity_surface.png
+→ sensitivity_strike.png
+| {shape: rectangle}
+
+iv: |md
+## `validate_iv.py`
+→ validate_iv.png
+RFSV IV smile vs live SPY chains
+| {shape: rectangle}
+
+asian: |md
+## `validate_asian.py`
+→ validate_asian.png
+Lévy benchmark + roughness premium
+| {shape: rectangle}
+
+conv: |md
+## `validate_convergence.py`
+→ convergence.png
+price ±1σ vs M paths, confirm σ ∝ 1/√M
+| {shape: rectangle}
+
+stab: |md
+## `validate_stability.py`
+→ stability_report.png
+FFT clipping, rSVD κ(Lₖ), Cholesky κ(C)
+| {shape: rectangle}
+
+mem: |md
+## `profile_memory.py`
+→ memory_profile.png
+tracemalloc peak vs N and M
+| {shape: rectangle}
+
+csvs.t -> scaling
+csvs.e -> scaling
+
+py -> structure
+py -> sensitivity
+py -> iv
+py -> asian
+py -> conv
+py -> stab
+py -> mem

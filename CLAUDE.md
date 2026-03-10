@@ -183,3 +183,14 @@ All in `papers-bg/`:
 - `2010_HMT_random_review.pdf` — Halko, Martinsson & Tropp (2011): rSVD Algorithm 4.4 implemented in `rsvd.hpp`
 - `fast-butterfly-fft.pdf` — Candès, Demanet & Ying (2008): theoretical basis for low-rank off-diagonal blocks in smooth kernel matrices (motivates H-matrix structure)
 - `hybrid-scheme-brownian-semistationary-process.pdf` — Bennedsen, Lunde & Pakkanen (2017): hybrid scheme for BSS processes — better simulation accuracy for rough kernels (H < 0.5), identified as future work
+
+## Commit Convention
+
+Use `type: short description` (one line, no period). Common types:
+
+- `feat` — new script, function, or C++ feature
+- `fix` — bug fix
+- `docs` — README, CLAUDE.md, comments, ALGORITHMS.md
+- `refactor` — restructuring without behavior change
+- `bench` — benchmark runner or CSV output changes
+- `style` — formatting, plot aesthetics

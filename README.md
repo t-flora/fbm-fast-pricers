@@ -1,6 +1,6 @@
 # Rough Volatility Asian Option Pricer
 
-A high-performance Monte Carlo pricer for an **Arithmetic Asian Call Option** under the **Rough Fractional Stochastic Volatility (RFSV)** model, benchmarking three algorithms for generating fractional Brownian motion (fBM) paths. The project is a practical study in how complexity theory translates to real speedups on a computationally demanding financial problem.
+A high-performance **option pricer** for an **Arithmetic Asian Call Option** under the **Rough Fractional Stochastic Volatility (RFSV)** model. The output is a single number: the fair price of the option (expected discounted payoff under the model). Because no closed-form formula exists, we estimate it via Monte Carlo — averaging the payoff over many independently simulated stock-price paths. The project benchmarks three algorithms for generating those paths using fractional Brownian motion (fBM), and studies how complexity theory translates to real speedups on this computationally demanding problem.
 
 ---
 
@@ -18,11 +18,11 @@ where $W^H$ is fBM with $H \approx 0.1$ and $\nu$ is the volatility-of-volatilit
 
 ### Why is this computationally hard?
 
-fBM is **non-Markovian**: the future of $W^H_t$ depends on the entire past path. There is no recursion to step forward. Exact path generation requires sampling from the full $N \times N$ multivariate Gaussian:
+fBM is **non-Markovian**: the future of $W^H_t$ depends on the entire past path. There is no recursion to step forward. Sampling an fBM path at $N$ discrete times requires drawing from an $N$-dimensional multivariate Gaussian whose covariance matrix $C$ is given analytically by the fBM kernel:
 
 $$C_{ij} = \mathbb{E}\left[W^H(t_i)\, W^H(t_j)\right] = \tfrac{1}{2}\left(t_i^{2H} + t_j^{2H} - |t_i - t_j|^{2H}\right)$$
 
-This matrix is dense — every pair of time points is correlated — and dense Cholesky costs $O(N^3)$.
+$C$ is not estimated from data — it is computed exactly from this formula. The challenge is that $C$ is dense (every pair of time points is correlated), so computing the Cholesky factorization $C = LL^\top$ — the standard way to sample from $\mathcal{N}(0, C)$ — costs $O(N^3)$.
 
 ### The option
 
@@ -30,7 +30,7 @@ This matrix is dense — every pair of time points is correlated — and dense C
 
 $$V = \max\left(\frac{1}{N}\sum_{i=1}^{N} S_i - K,\; 0\right)$$
 
-The path-dependent average eliminates any closed-form pricing formula. Monte Carlo is the standard method.
+The path-dependent average eliminates any closed-form pricing formula. **Monte Carlo** is the standard method: simulate $M$ independent stock-price paths (each driven by a fresh fBM sample), compute the payoff $V$ on each, and average. The option price is $\hat{p} = e^{-rT} \cdot \frac{1}{M}\sum_{m=1}^{M} V^{(m)}$, with standard error $\sigma_V / \sqrt{M}$.
 
 ---
 
@@ -40,27 +40,29 @@ The path-dependent average eliminates any closed-form pricing formula. Monte Car
 
 **File:** `src/cholesky/cholesky.hpp` | **Cost:** $O(N^3)$ setup, $O(N^2)$ per path
 
-Build the full $N \times N$ fBM covariance matrix $C$ and factorize it as $C = LL^\top$ once via `Eigen::LLT`. For each Monte Carlo path, draw $z \sim \mathcal{N}(0, I_N)$ and compute $\log \sigma = \nu L z$.
+Build the full $N \times N$ fBM covariance matrix $C$ analytically (from the formula above) and factorize it as $C = LL^\top$ **once** via `Eigen::LLT` (the $O(N^3)$ step). Then, for each of the $M$ Monte Carlo paths: draw $z \sim \mathcal{N}(0, I_N)$ and compute $\log \sigma = \nu L z$ — a single triangular matrix-vector multiply ($O(N^2)$ flops) that produces one correlated fBM log-volatility path. Exponentiate to get instantaneous volatility, simulate stock prices, compute the Asian payoff, and average over all $M$ paths.
 
-The per-path $O(MN^2)$ term dominates for $M = 10{,}000$ paths, yielding an observed scaling exponent of $\approx 1.54$ rather than 3.
+The per-path triangular solve costs $O(N^2)$, so the full MC loop costs $O(MN^2)$. For $M = 10{,}000$ paths this dominates the one-time $O(N^3)$ factorization, yielding an observed scaling exponent of $\approx 1.54$ rather than 3.
 
 ### Algorithm 2 — Circulant Embedding + FFT
 
 **File:** `src/fft/fft.hpp` | **Cost:** $O(N \log N)$ setup, $O(N \log N)$ per path
 
-Based on the **Davies–Harte / Wood–Chan** exact method. The key insight: fBM **increments** (fractional Gaussian noise, fGn) are stationary even though fBM is not, so the increment covariance is Toeplitz. A Toeplitz matrix embeds into a circulant whose eigenvalues are the DFT of its first row.
+Based on the **Davies–Harte** (1987) / **Wood–Chan** (1994) exact method. The key insight: fBM **increments** $\delta W_k = W_{(k+1)\Delta t} - W_{k\Delta t}$ (fractional Gaussian noise, fGn) are stationary even though fBM itself is not. Stationarity means $\operatorname{Cov}(\delta W_i,\, \delta W_{i+k})$ depends only on the lag $k$, not on the absolute position $i$. A covariance matrix whose $(i,j)$ entry depends only on $|i-j|$ has constant diagonals — by definition, it is **Toeplitz**. A Toeplitz matrix can be embedded into a circulant, and circulant matrices are diagonalized by the DFT, whose eigenvalues are the FFT of the circulant's first row.
 
-**fGn autocovariance** at lag $k$:
+**fGn autocovariance** at lag $k$ (with time step $\Delta t = T/N$):
 
-$$\gamma(k) = \frac{\mathrm{d}t^{2H}}{2}\!\left(|k+1|^{2H} + |k-1|^{2H} - 2|k|^{2H}\right)$$
+$$\gamma(k) = \frac{\Delta t^{2H}}{2}\!\left(|k+1|^{2H} + |k-1|^{2H} - 2|k|^{2H}\right)$$
 
 **Embedding:** size-$2N$ circulant first row $c = [\gamma(0), \ldots, \gamma(N{-}1), 0, \gamma(N{-}1), \ldots, \gamma(1)]$
 
-**Eigenvalues:** $\lambda = \text{FFT}(c)$ — all $\lambda_j \geq 0$ for $H \leq \tfrac{1}{2}$ (Wood & Chan 1994).
+**Eigenvalues:** $\lambda = \text{FFT}(c)$ — all $\lambda_j \geq 0$ for $H \leq \tfrac{1}{2}$ in the large-$N$ limit (Wood & Chan 1994); see the stability section for the finite-$N$ behavior.
 
-**Per path:** draw complex white noise $w_j$, scale by $\sqrt{\lambda_j / 2N}$, apply IFFT, take real part → fGn increments. Cumulative sum gives the fBM log-vol path. FFTW plans are created once and reused.
+**Per path:** draw complex white noise $w_j$, scale by $\sqrt{\lambda_j / 2N}$, apply IFFT, take real part → fGn increments. Cumulative sum gives the fBM log-vol path.
 
-> **Critical:** the fBM covariance itself is non-Toeplitz and produces negative eigenvalues if embedded directly. Only the increment covariance embeds into a valid PSD circulant.
+**FFTW** ("Fastest Fourier Transform in the West") is the C library used for all FFT computation. A **plan** is a one-time strategy computed at startup: FFTW profiles several algorithm variants and memory layouts for the given array size and CPU, then stores the winning recipe. Executing the plan is then near-optimal. Creating a plan takes ~1 ms; reusing it across all $M$ paths amortizes that cost to nothing. Two plans are created once: one for the forward FFT (eigenvalue computation) and one for the inverse FFT (per-path synthesis).
+
+> **Critical:** the fBM covariance itself is non-Toeplitz and produces negative eigenvalues if embedded directly. Only the increment (fGn) covariance embeds into a valid PSD circulant.
 
 ### Algorithm 3 — H-matrix + Randomized SVD
 
@@ -88,18 +90,20 @@ Benchmarked at $M = 10{,}000$ paths, $N \in \{252, 500, 1000\}$:
 | Circulant+FFT | $O(MN \log N)$ | 1.01 | $1.0 \times 10^{-3}$ | 1.000 |
 | H-matrix+rSVD $(k=32)$ | $O(MNk)$ | 1.06 | $3.0 \times 10^{-4}$ | 1.000 |
 
-FFT and H-matrix both scale as $O(N)$ in this regime (the $\log N$ factor is invisible across a $4\times$ range of $N$).
+FFT is theoretically $O(N \log N)$ and H-matrix $O(MNk)$, but both **appear linear** in the fitted data. This is an artifact of the narrow $N$ range tested: going from $N = 252$ to $N = 1000$ is only a $4\times$ increase, over which $\log_2 N$ grows from $\approx 7.97$ to $\approx 9.97$ — a factor of 1.25. A 25% multiplicative drift in the prefactor is smaller than the noise in a three-point log-log regression, so the fitted exponent comes out as 1.01 rather than something distinguishably above 1. The $\log N$ factor has not vanished; it is simply unresolvable at this scale. To observe it cleanly, you would need to benchmark over a range of $100\times$ or more in $N$.
 
-**Memory** (Apple M2, $N = 1000$):
+**Memory** ($N = 1000$, numbers measured on Apple M2 with L3 = 16 MB, peak DRAM bandwidth ≈ 100 GB/s; L3 size and bandwidth vary by platform):
 
-| Method | Peak memory | Cache pressure (L3 = 16 MB) |
-|--------|------------|------------------------------|
+| Method | Peak memory | Cache pressure (fraction of L3) |
+|--------|------------|----------------------------------|
 | Cholesky | 7.6 MB ($N^2 \cdot 8$) | $0.48\times$ |
-| FFT | 0.015 MB ($2N \cdot 8$) | $0.001\times$ |
+| FFT | 0.015 MB ($2N \cdot 8$) | $< 0.001\times$ |
 | H-matrix (C held) | 7.6 MB | $0.48\times$ |
 | H-matrix (C freed) | 0.24 MB ($Nk \cdot 8$) | $0.015\times$ |
 
-Cholesky memory-bandwidth utilization: $\approx 47$ GB/s at $N = 1000$ (47% of M2's rated 100 GB/s), confirming the MC loop is memory-bound.
+The Cholesky MC loop is **memory-bandwidth limited**, not compute-limited. Each path reads the full $N \times N$ lower-triangular $L$ matrix ($\approx 4$ MB at $N = 1000$) to compute $Lz$. With $M = 10{,}000$ paths this is $\approx 40$ GB of sequential reads. On the M2 test machine this consumed $\approx 47$ GB/s — roughly half of rated peak bandwidth.
+
+At **larger $N$**, the $L$ matrix grows as $N^2$. Once it no longer fits in the last-level cache, every path becomes a full DRAM read and the operation stays saturated at the bandwidth ceiling. There is no sudden failure: the MC loop continues to work correctly, it just remains bandwidth-bound. The implication is that Cholesky's wall time is increasingly dominated by memory access, not arithmetic, and a hardware with higher memory bandwidth (e.g. a newer GPU or a machine with wider memory buses) would close the performance gap with FFT more than a faster CPU would.
 
 **H-matrix approximation quality** ($\|C - C_k\|_F / \|C\|_F$):
 
@@ -112,7 +116,7 @@ Cholesky memory-bandwidth utilization: $\approx 47$ GB/s at $N = 1000$ (47% of M
 
 Slow convergence is fundamental: the singular spectrum of $C$ decays slowly for rough $H = 0.1$.
 
-**Reference price:** $p_\text{ref} = 23.58$ (average of 500k-path Cholesky and 500k-path FFT; $H = 0.10$, $\nu = 0.30$, $S_0 = K = 100$, $T = 1$).
+**Reference price:** $p_\text{ref} = 23.58$. There is no closed-form formula for this option, so we need a Monte Carlo ground truth to measure H-matrix approximation error against. We run both Cholesky and FFT — two independent, exact fBM simulation methods — with 500,000 paths each and average the results. The Monte Carlo standard error at 500k paths is $\sigma_V / \sqrt{500{,}000} \approx 35 / 707 \approx 0.05$ price units, much smaller than the H-matrix pricing errors being measured (which range from ~0.1 to ~2 at low rank). Averaging two exact methods further halves any remaining systematic difference. The parameters $H = 0.10$, $\nu = 0.30$, $S_0 = K = 100$, $T = 1$ are the calibrated RFSV model values stored in `src/common/params.hpp`; $S_0 = K = 100$ means the option is struck at-the-money.
 
 ---
 
@@ -205,6 +209,14 @@ uv run python plots/plot_sensitivity.py
 
 ---
 
+## Data Flow
+
+![Data flow diagram](dataflow.svg)
+
+> Regenerate after changes: `d2 dataflow.d2 dataflow.svg`
+
+---
+
 ## Project Structure
 
 ```
@@ -252,7 +264,11 @@ ALGORITHMS.md           Beginner's guide to each algorithm with code annotations
 
 | Paper | Role in this project |
 |-------|---------------------|
-| Gatheral, Jaisson & Rosenbaum (2014). *Volatility is rough.* | Empirical $H \approx 0.1$; RFSV model definition; calibration method |
-| Halko, Martinsson & Tropp (2011). *Finding structure with randomness.* SIAM Review 53(2) | Algorithm 4.4 (rSVD with power iteration) in `rsvd.hpp` |
-| Candès, Demanet & Ying (2008). *A fast butterfly algorithm for Fourier integral operators.* | Theoretical basis for low-rank off-diagonal blocks in smooth kernels |
-| Bennedsen, Lunde & Pakkanen (2017). *Hybrid scheme for Brownian semistationary processes.* | Better simulation for rough kernels; identified as future work |
+| Gatheral, Jaisson & Rosenbaum (2014). *Volatility is rough.* Quantitative Finance 18(6). DOI: 10.1080/14697688.2017.1393551 | Empirical $H \approx 0.1$; RFSV model definition; calibration method |
+| Davies, R.B. & Harte, D.S. (1987). *Tests for Hurst effect.* Biometrika 74(1), 95–101. DOI: 10.1093/biomet/74.1.95 | Original circulant embedding method for exact stationary Gaussian simulation |
+| Wood, A.T.A. & Chan, G. (1994). *Simulation of stationary Gaussian processes in $[0,1]^d$.* JCGS 3(4), 409–432. DOI: 10.1080/10618600.1994.10474655 | Proves the circulant embedding is PSD for $H \in (0,1)$; theoretical guarantee for the FFT pricer |
+| Halko, Martinsson & Tropp (2011). *Finding structure with randomness.* SIAM Review 53(2). DOI: 10.1137/090771806 | Algorithm 4.4 (rSVD with power iteration) in `rsvd.hpp` |
+| Candès, Demanet & Ying (2008). *A fast butterfly algorithm for Fourier integral operators.* Multiscale Model. Simul. 7(4). DOI: 10.1137/080734339 | Theoretical basis for low-rank off-diagonal blocks in smooth kernels |
+| Bennedsen, Lunde & Pakkanen (2017). *Hybrid scheme for Brownian semistationary processes.* Finance Stoch. 21(4). DOI: 10.1007/s00780-017-0335-5 | Better simulation for rough kernels; identified as future work |
+| Lévy, E. (1992). *Pricing European average rate currency options.* J. Int. Money Finance 11(5). DOI: 10.1016/0261-5606(92)90033-E | Analytical approximation for arithmetic Asian calls; used as benchmark in Phase 2 validation |
+| Mandelbrot, B.B. & Van Ness, J.W. (1968). *Fractional Brownian motions, fractional noises and applications.* SIAM Review 10(4). DOI: 10.1137/1010093 | Original definition of fBM and fGn; covariance kernel in `covariance.hpp` |
