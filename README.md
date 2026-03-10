@@ -20,7 +20,7 @@ where $W^H$ is fBM with $H \approx 0.1$ and $\nu$ is the volatility-of-volatilit
 
 fBM is **non-Markovian**: the future of $W^H_t$ depends on the entire past path. There is no recursion to step forward. Exact path generation requires sampling from the full $N \times N$ multivariate Gaussian:
 
-$$C_{ij} = \mathbb{E}\!\left[W^H(t_i)\, W^H(t_j)\right] = \tfrac{1}{2}\!\left(t_i^{2H} + t_j^{2H} - |t_i - t_j|^{2H}\right)$$
+$$C_{ij} = \mathbb{E}\left[W^H(t_i)\, W^H(t_j)\right] = \tfrac{1}{2}\left(t_i^{2H} + t_j^{2H} - |t_i - t_j|^{2H}\right)$$
 
 This matrix is dense — every pair of time points is correlated — and dense Cholesky costs $O(N^3)$.
 
@@ -28,7 +28,7 @@ This matrix is dense — every pair of time points is correlated — and dense C
 
 **Arithmetic Asian Call**: payoff at maturity is
 
-$$V = \max\!\left(\frac{1}{N}\sum_{i=1}^{N} S_i - K,\; 0\right)$$
+$$V = \max\left(\frac{1}{N}\sum_{i=1}^{N} S_i - K,\; 0\right)$$
 
 The path-dependent average eliminates any closed-form pricing formula. Monte Carlo is the standard method.
 
@@ -56,7 +56,7 @@ $$\gamma(k) = \frac{\mathrm{d}t^{2H}}{2}\!\left(|k+1|^{2H} + |k-1|^{2H} - 2|k|^{
 
 **Embedding:** size-$2N$ circulant first row $c = [\gamma(0), \ldots, \gamma(N{-}1), 0, \gamma(N{-}1), \ldots, \gamma(1)]$
 
-**Eigenvalues:** $\lambda = \operatorname{FFT}(c)$ — all $\lambda_j \geq 0$ for $H \leq \tfrac{1}{2}$ (Wood & Chan 1994).
+**Eigenvalues:** $\lambda = \text{FFT}(c)$ — all $\lambda_j \geq 0$ for $H \leq \tfrac{1}{2}$ (Wood & Chan 1994).
 
 **Per path:** draw complex white noise $w_j$, scale by $\sqrt{\lambda_j / 2N}$, apply IFFT, take real part → fGn increments. Cumulative sum gives the fBM log-vol path. FFTW plans are created once and reused.
 
@@ -68,9 +68,9 @@ $$\gamma(k) = \frac{\mathrm{d}t^{2H}}{2}\!\left(|k+1|^{2H} + |k-1|^{2H} - 2|k|^{
 
 The fBM covariance kernel is smooth away from its diagonal, so off-diagonal blocks are numerically low-rank (Candès, Demanet & Ying 2008). A global rank-$k$ randomized SVD (Halko, Martinsson & Tropp 2011) approximates:
 
-$$C \approx U \operatorname{diag}(S) U^\top, \qquad U \in \mathbb{R}^{N \times k}$$
+$$C \approx U \text{diag}(S) U^\top, \qquad U \in \mathbb{R}^{N \times k}$$
 
-The approximate Cholesky factor $L_k = U \operatorname{diag}(\sqrt{S})$ satisfies $L_k L_k^\top \approx C$, reducing per-path cost to $O(Nk)$.
+The approximate Cholesky factor $L_k = U \text{diag}(\sqrt{S})$ satisfies $L_k L_k^\top \approx C$, reducing per-path cost to $O(Nk)$.
 
 **rSVD** (Algorithm 4.4 from Halko et al.): random sketch $Y = C\Omega$, $q = 2$ power iterations (critical for slowly-decaying spectra at $H = 0.1$), QR decomposition, thin SVD on the small projected matrix.
 
