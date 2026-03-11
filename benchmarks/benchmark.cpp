@@ -1,11 +1,11 @@
 // Unified benchmark: times all three pricers, exports CSV results.
 //
 // "Exact" methods: Cholesky and FFT both produce exact fBM samples.
-// "Approximate" method: H-matrix + rSVD — truncation error controlled by rank k.
+// "Approximate" method: low-rank rSVD — truncation error controlled by rank k.
 //
 // Memory metrics (macOS mach API):
 //   peak_rss_mb       — resident set size after the call (proxy for peak allocation)
-//   theoretical_peak_mb — analytical formula: Cholesky N^2*8, FFT N*8, hmatrix N^2*8 or N*k*8
+//   theoretical_peak_mb — analytical formula: Cholesky N^2*8, FFT 2N*16, hmatrix N^2*8 or N*k*8
 //   cache_pressure    — peak_rss_mb / L3_MB  (>1 means L3 spill)
 //   est_bandwidth_GBs — Cholesky only: bytes_accessed / wall_time_s (memory-bound check)
 //
@@ -96,7 +96,7 @@ int main() {
         auto rf = fft_pricer::price_timed(N, M_PATHS);
         double rss_fft = rss_mb();
         double t_fft = rf.t_construct + rf.t_mc;
-        double theory_fft_mb = static_cast<double>(N) * 2 * 8.0 / (1024.0 * 1024.0);
+        double theory_fft_mb = static_cast<double>(N) * 2 * 16.0 / (1024.0 * 1024.0);
         double cache_fft = theory_fft_mb / L3_MB;
 
         csv_time << "fft," << N << "," << M_PATHS << "," << t_fft << "," << rf.price
@@ -106,7 +106,7 @@ int main() {
         std::cout << "  fft      : price=" << rf.price << "  time=" << t_fft
                   << "s  theory=" << theory_fft_mb << " MB\n";
 
-        // H-matrix (C held): peak = N x N covariance matrix (O(N^2)) + Lk (N x k)
+        // rSVD (C held): peak = N x N covariance matrix (O(N^2)) + Lk (N x k)
         constexpr int RANK_K = 32;
         rss_before = rss_mb();
         auto rh = hmatrix::price_timed(N, M_PATHS, RANK_K);
@@ -122,7 +122,7 @@ int main() {
         std::cout << "  hmatrix  : price=" << rh.price << "  time=" << t_hmat
                   << "s  theory=" << theory_hmat_mb << " MB\n";
 
-        // H-matrix (C freed before MC): peak during MC = Lk only (N x k)
+        // rSVD (C freed before MC): peak during MC = Lk only (N x k)
         rss_before = rss_mb();
         auto rhf = hmatrix::price_freed_timed(N, M_PATHS, RANK_K);
         double rss_hmat_f = rss_mb();

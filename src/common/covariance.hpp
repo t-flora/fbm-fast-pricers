@@ -19,11 +19,3 @@ inline Eigen::MatrixXd build_fbm_cov_matrix(int N, double H, double T) {
     return C;
 }
 
-// First row of the Toeplitz fBM covariance (used by FFT circulant embedding)
-inline Eigen::VectorXd fbm_cov_first_row(int N, double H, double T) {
-    double dt = T / N;
-    Eigen::VectorXd row(N);
-    for (int j = 0; j < N; ++j)
-        row(j) = fbm_cov(dt, (j+1)*dt, H);
-    return row;
-}

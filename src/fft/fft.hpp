@@ -4,12 +4,12 @@
 //
 // Key insight: fBM itself is non-stationary, so its covariance matrix is NOT Toeplitz.
 // However, fBM *increments* (fractional Gaussian noise, fGn) ARE stationary, so their
-// covariance IS Toeplitz and embeds into a PSD circulant for H ∈ (0,1).
+// covariance IS Toeplitz and embeds into a PSD circulant (guaranteed for H ≥ ½; asymptotically for H < ½).
 //
 // Algorithm:
 //   1. Compute fGn autocovariance γ(k) = (dt^{2H}/2)*((k+1)^{2H} - 2k^{2H} + (k-1)^{2H})
 //   2. Embed into 2N circulant: c = [γ(0)..γ(N-1), 0, γ(N-1)..γ(1)]
-//   3. FFT(c) → eigenvalues λ (all ≥ 0 for H ≤ 0.5; proved by Wood & Chan 1994)
+//   3. FFT(c) → eigenvalues λ (guaranteed ≥ 0 for H ≥ ½; asymptotically ≥ 0 for H < ½)
 //   4. Per path: w[j] = sqrt(λ[j]/M) * (a+ib), x = Re(IFFT(w)), first N = fGn increments
 //   5. log_vol = cumsum(x[0..N-1])  → fBM path; then simulate GBM prices
 
@@ -63,7 +63,7 @@ double price(int N, int M_paths, unsigned seed = 42) {
     // All imaginary parts should be ≈ 0 (real symmetric input)
     for (int k = 0; k < M; ++k)
         if (lam[k].real() < -1e-8)
-            throw std::runtime_error("fGn circulant embedding not PSD (unexpected for H<0.5)");
+            throw std::runtime_error("fGn circulant embedding not PSD (unexpected for H >= 0.5; clip for H < 0.5)");
 
     // ── Step 3: Pre-allocate FFTW synthesis buffer (reused each path) ────────
     std::vector<std::complex<double>> w_buf(M), out_buf(M);

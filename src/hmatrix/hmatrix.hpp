@@ -1,14 +1,14 @@
 #pragma once
-// Block 4: Randomized low-rank (H-matrix) path generator.
+// Block 4: Global low-rank rSVD path generator.
 //
 // Approach: global rank-k approximation of the fBM covariance matrix C via rSVD.
 // Since C is symmetric PD, rSVD yields C ≈ U * diag(S) * U^T (U is N×k).
 // Approximate Cholesky factor: L_k = U * diag(sqrt(S))  →  L_k * L_k^T ≈ C.
 // Path generation: log_vol = nu * L_k * z   (z ~ N(0, I_k))  →  O(N*k) per path.
 //
-// This captures the H-matrix insight that the fBM covariance is effectively
+// This captures the low-rank structure insight that the fBM covariance is effectively
 // low-rank away from the diagonal; rank k controls the accuracy-speed tradeoff.
-// Construction cost: O(N*k^2) via power-iteration rSVD.
+// Construction cost: O(N^2*k) via power-iteration rSVD.
 // Per-path cost: O(N*k) vs O(N^2) for dense Cholesky.
 #include <Eigen/Dense>
 #include <chrono>

@@ -87,7 +87,7 @@ Benchmarked at $M = 10{,}000$ paths, $N \in \{252, 500, 1000\}$:
 | Method | Complexity | Fitted $\alpha$ | $c$ | $R^2$ |
 |--------|-----------|-----------------|-----|-------|
 | Dense Cholesky | $O(MN^2 + N^3)$ | 1.54 | $4.1 \times 10^{-5}$ | 0.999 |
-| Circulant+FFT | $O(MN \log N)$ | 1.01 | $1.0 \times 10^{-3}$ | 1.000 |
+| Circulant+FFT | $O(MN \log N + N \log N)$ | 1.01 | $1.0 \times 10^{-3}$ | 1.000 |
 | Low-rank rSVD $(k=32)$ | $O(MNk + N^2k)$ | 1.06 | $3.0 \times 10^{-4}$ | 1.000 |
 
 The full FFT loop theoretically scales as $O(MN \log N)$ and low-rank rSVD as $O(MNk + N^2k)$, but both **appear linear in $N$** in the fitted data. This is an artifact of the narrow $N$ range tested: going from $N = 252$ to $N = 1000$ is only a $4\times$ increase, over which $\log_2 N$ grows from $\approx 7.97$ to $\approx 9.97$ — a factor of 1.25. A 25% multiplicative drift in the prefactor is smaller than the noise in a three-point log-log regression, so the fitted exponent comes out as 1.01 rather than something distinguishably above 1. The $\log N$ factor has not vanished; it is simply unresolvable at this scale. To observe it cleanly, you would need to benchmark over a range of $100\times$ or more in $N$.
@@ -97,7 +97,7 @@ The full FFT loop theoretically scales as $O(MN \log N)$ and low-rank rSVD as $O
 | Method | Peak memory | Cache pressure (fraction of L3) |
 |--------|------------|----------------------------------|
 | Cholesky | 7.6 MB ($N^2 \cdot 8$) | $0.48\times$ |
-| FFT | 0.015 MB ($2N \cdot 8$) | $< 0.001\times$ |
+| FFT | 0.032 MB ($2N \cdot 16$) | $< 0.001\times$ |
 | Low-rank rSVD (C held) | 7.6 MB | $0.48\times$ |
 | Low-rank rSVD (C freed) | 0.24 MB ($Nk \cdot 8$) | $0.015\times$ |
 

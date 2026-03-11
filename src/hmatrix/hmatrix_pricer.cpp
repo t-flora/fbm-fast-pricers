@@ -10,7 +10,7 @@ int main() {
         double p = hmatrix::price(N, M_PATHS);
         double elapsed = std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - t0).count();
-        std::cout << "H-matrix  N=" << N << "  price=" << p
+        std::cout << "rSVD  N=" << N << "  price=" << p
                   << "  time=" << elapsed << "s\n";
     }
 }
