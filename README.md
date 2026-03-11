@@ -88,9 +88,9 @@ Benchmarked at $M = 10{,}000$ paths, $N \in \{252, 500, 1000\}$:
 |--------|-----------|-----------------|-----|-------|
 | Dense Cholesky | $O(MN^2 + N^3)$ | 1.54 | $4.1 \times 10^{-5}$ | 0.999 |
 | Circulant+FFT | $O(MN \log N)$ | 1.01 | $1.0 \times 10^{-3}$ | 1.000 |
-| Low-rank rSVD $(k=32)$ | $O(MNk)$ | 1.06 | $3.0 \times 10^{-4}$ | 1.000 |
+| Low-rank rSVD $(k=32)$ | $O(MNk + N^2k)$ | 1.06 | $3.0 \times 10^{-4}$ | 1.000 |
 
-FFT is theoretically $O(N \log N)$ and H-matrix $O(MNk)$, but both **appear linear** in the fitted data. This is an artifact of the narrow $N$ range tested: going from $N = 252$ to $N = 1000$ is only a $4\times$ increase, over which $\log_2 N$ grows from $\approx 7.97$ to $\approx 9.97$ — a factor of 1.25. A 25% multiplicative drift in the prefactor is smaller than the noise in a three-point log-log regression, so the fitted exponent comes out as 1.01 rather than something distinguishably above 1. The $\log N$ factor has not vanished; it is simply unresolvable at this scale. To observe it cleanly, you would need to benchmark over a range of $100\times$ or more in $N$.
+FFT is theoretically $O(N \log N)$ and low-rank rSVD $O(MNk + N^2k)$, but both **appear linear** in the fitted data. This is an artifact of the narrow $N$ range tested: going from $N = 252$ to $N = 1000$ is only a $4\times$ increase, over which $\log_2 N$ grows from $\approx 7.97$ to $\approx 9.97$ — a factor of 1.25. A 25% multiplicative drift in the prefactor is smaller than the noise in a three-point log-log regression, so the fitted exponent comes out as 1.01 rather than something distinguishably above 1. The $\log N$ factor has not vanished; it is simply unresolvable at this scale. To observe it cleanly, you would need to benchmark over a range of $100\times$ or more in $N$.
 
 **Memory** ($N = 1000$, numbers measured on Apple M2 with L3 = 16 MB, peak DRAM bandwidth $\approx 100$ GB/s; L3 size and bandwidth vary by platform):
 
@@ -98,14 +98,14 @@ FFT is theoretically $O(N \log N)$ and H-matrix $O(MNk)$, but both **appear line
 |--------|------------|----------------------------------|
 | Cholesky | 7.6 MB ($N^2 \cdot 8$) | $0.48\times$ |
 | FFT | 0.015 MB ($2N \cdot 8$) | $< 0.001\times$ |
-| H-matrix (C held) | 7.6 MB | $0.48\times$ |
-| H-matrix (C freed) | 0.24 MB ($Nk \cdot 8$) | $0.015\times$ |
+| Low-rank rSVD (C held) | 7.6 MB | $0.48\times$ |
+| Low-rank rSVD (C freed) | 0.24 MB ($Nk \cdot 8$) | $0.015\times$ |
 
 The Cholesky MC loop is **memory-bandwidth limited**, not compute-limited. Each path reads the full $N \times N$ lower-triangular $L$ matrix ($\approx 4$ MB at $N = 1000$) to compute $Lz$. With $M = 10{,}000$ paths this is $\approx 40$ GB of sequential reads. On the M2 test machine this consumed $\approx 47$ GB/s — roughly half of rated peak bandwidth.
 
 At **larger $N$**, the $L$ matrix grows as $N^2$. Once it no longer fits in the last-level cache, every path becomes a full DRAM read and the operation stays saturated at the bandwidth ceiling. There is no sudden failure: the MC loop continues to work correctly, it just remains bandwidth-bound. The implication is that Cholesky's wall time is increasingly dominated by memory access, not arithmetic, and a hardware with higher memory bandwidth (e.g. a newer GPU or a machine with wider memory buses) would close the performance gap with FFT more than a faster CPU would.
 
-**H-matrix approximation quality** ($\|C - C_k\|_F / \|C\|_F$):
+**Low-rank approximation quality** ($\|C - C_k\|_F / \|C\|_F$):
 
 | Rank $k$ | Frobenius error |
 |----------|----------------|
@@ -116,7 +116,7 @@ At **larger $N$**, the $L$ matrix grows as $N^2$. Once it no longer fits in the 
 
 Slow convergence is fundamental: the singular spectrum of $C$ decays slowly for rough $H = 0.1$.
 
-**Reference price:** $p_\text{ref} = 23.58$. There is no closed-form formula for this option, so we need a Monte Carlo ground truth to measure H-matrix approximation error against. We run both Cholesky and FFT — two independent, exact fBM simulation methods — with 500,000 paths each and average the results. The Monte Carlo standard error at 500k paths is $\sigma_V / \sqrt{500{,}000} \approx 35 / 707 \approx 0.05$ price units, much smaller than the H-matrix pricing errors being measured (which range from ~0.1 to ~2 at low rank). Both methods draw from the identical $N$-dimensional Gaussian, so pooling their results is equivalent to a single $1{,}000{,}000$-path run, halving the Monte Carlo standard error relative to either method alone. The parameters $H = 0.10$, $\nu = 0.30$, $S_0 = K = 100$, $T = 1$ are the calibrated RFSV model values stored in `src/common/params.hpp`; $S_0 = K = 100$ means the option is struck at-the-money.
+**Reference price:** $p_\text{ref} = 23.58$. There is no closed-form formula for this option, so we need a Monte Carlo ground truth to measure low-rank approximation error against. We run both Cholesky and FFT — two independent simulation methods (one strictly exact, one asymptotically exact) — with 500,000 paths each and average the results. The Monte Carlo standard error at 500k paths is $\sigma_V / \sqrt{500{,}000} \approx 35 / 707 \approx 0.05$ price units, much smaller than the low-rank pricing errors being measured (which range from ~0.1 to ~2 at low rank). Both methods draw from the identical $N$-dimensional Gaussian, so pooling their results is equivalent to a single $1{,}000{,}000$-path run, halving the Monte Carlo standard error relative to either method alone. The parameters $H = 0.10$, $\nu = 0.30$, $S_0 = K = 100$, $T = 1$ are the calibrated RFSV model values stored in `src/common/params.hpp`; $S_0 = K = 100$ means the option is struck at-the-money.
 
 ---
 
@@ -133,7 +133,7 @@ uv run python data/validate_iv.py [--M 3000] [--N 63]
 
 ### Phase 2 — Lévy benchmark + roughness premium
 
-`data/validate_asian.py` benchmarks the RFSV Asian price against the Lévy (1992) log-normal approximation and computes the roughness premium: the price increase when $H$ is reduced from $H = 0.5$ (standard GBM) to $H = 0.1$ (rough volatility). Runs 3 seeds for $\pm 1\sigma$ error bars. Note that $\nu$ is held fixed across $H$ values; since the path-integrated variance $\int_0^T t^{2H}\,dt = \frac{T^{2H+1}}{2H+1}$ differs by $H$, this comparison conflates roughness with a change in average instantaneous variance — a variance-normalized comparison (rescaling $\nu$ to match integrated variance) would isolate the pure roughness premium.
+`data/validate_asian.py` benchmarks the RFSV Asian price against the Lévy (1992) log-normal approximation and computes the roughness premium: the price increase when $H$ is reduced from $H = 0.5$ (standard GBM) to $H = 0.1$ (rough volatility). Runs 3 seeds for $\pm 1\sigma$ error bars. Note that $\nu$ is held fixed across $H$ values; since the log-volatility path-integrated variance $\int_0^T t^{2H}\,dt = \frac{T^{2H+1}}{2H+1}$ differs by $H$, this comparison conflates roughness with a change in average instantaneous variance — a variance-normalized comparison (rescaling $\nu$ to match integrated variance) would isolate the pure roughness premium.
 
 ```bash
 uv run python data/validate_asian.py [--M 5000] [--N 252]
@@ -156,7 +156,7 @@ uv run python plots/plot_sensitivity.py [--M 10000] [--N 252]
 `plots/plot_structure.py` provides the geometric motivation for each algorithm:
 
 - **Toeplitz structure of fGn** (why FFT works): fGn covariance heatmap shows constant diagonals; fBM covariance does not. The translational invariance of increments is exactly what enables the circulant embedding.
-- **Low-rank off-diagonal blocks** (why H-matrix/rSVD works): singular value decay of the off-diagonal block is faster for $H = 0.5$ than $H = 0.1$, connecting to Candès-Demanet-Ying (2008).
+- **Low-rank off-diagonal blocks** (why global low-rank rSVD works): singular value decay of the off-diagonal block is faster for $H = 0.5$ than $H = 0.1$, connecting to Candès-Demanet-Ying (2008).
 
 ```bash
 uv run python plots/plot_structure.py [--N-small 64] [--N-large 128]
@@ -238,7 +238,7 @@ src/common/
   rng.hpp               Seeded RNG helpers
 src/cholesky/           Algorithm 1: Dense Cholesky
 src/fft/                Algorithm 2: Circulant embedding + FFTW
-src/hmatrix/            Algorithm 3: H-matrix + rSVD (rsvd.hpp = Halko et al. Alg 4.4)
+src/hmatrix/            Algorithm 3: Global Low-Rank rSVD (rsvd.hpp = Halko et al. Alg 4.4)
 benchmarks/
   benchmark.cpp         Timing + accuracy + memory runner; writes CSVs
   results/              time_vs_N.csv, error_vs_rank.csv, reference_price.txt
