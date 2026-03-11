@@ -151,7 +151,7 @@ def main() -> None:
     ax_svd  = fig.add_subplot(gs[1, 1])
 
     fig.suptitle(
-        f"Structural Analysis: why FFT and H-matrix work\n"
+        f"Structural Analysis: why FFT and low-rank rSVD work\n"
         f"H = {H_rough},  N = {N_sm} (heatmaps),  N = {N_lg} (SVD)",
         fontsize=11, y=1.01,
     )
@@ -176,7 +176,7 @@ def main() -> None:
     plt.colorbar(im_b, ax=ax_fgn, fraction=0.046, pad=0.04)
     ax_fgn.set_title(
         "(b) fGn covariance  $\\gamma(|i-j|)$\n"
-        "Toeplitz — constant diagonals → circulant embedding",
+        r"Toeplitz — constant diagonals $\rightarrow$ circulant embedding",
         fontsize=9,
     )
     ax_fgn.set_xlabel("time step $j$")
@@ -231,13 +231,14 @@ def main() -> None:
     r_smooth = crossing_rank(sv_smooth, threshold)
     for r, col, lbl in [(r_rough, "C0", f"k={r_rough}"), (r_smooth, "C1", f"k={r_smooth}")]:
         ax_svd.axvline(r, color=col, ls=":", lw=1.0, alpha=0.7)
-        ax_svd.text(r + 0.4, threshold * 1.8, lbl, color=col, fontsize=8)
+        ax_svd.text(r + 0.4, threshold * 1.8, lbl, color=col, fontsize=8,
+                    bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85, edgecolor="none"))
 
     ax_svd.set_xlabel("rank $k$")
     ax_svd.set_ylabel("normalised singular value  $\\sigma_k / \\sigma_1$")
     ax_svd.set_title(
         f"(d) Off-diagonal block singular value decay  (N={N_lg})\n"
-        "Rougher H → slower decay → higher rank needed for accuracy",
+        r"Rougher $H$ $\rightarrow$ slower decay $\rightarrow$ higher rank needed for accuracy",
         fontsize=9,
     )
     ax_svd.legend(fontsize=9)

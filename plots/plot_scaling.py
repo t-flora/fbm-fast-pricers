@@ -26,7 +26,7 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "benchmarks", "resul
 METHOD_STYLE = {
     "cholesky": {"label": "Dense Cholesky",        "marker": "o", "color": "#e74c3c"},
     "fft":      {"label": "Circulant+FFT",          "marker": "s", "color": "#2ecc71"},
-    "hmatrix":  {"label": "H-matrix+rSVD (k=32)",  "marker": "^", "color": "#3498db"},
+    "hmatrix":  {"label": "Low-rank rSVD (k=32)",   "marker": "^", "color": "#3498db"},
 }
 
 THEORY_EXP = {
@@ -71,18 +71,10 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
         # Data points
         ax.loglog(Ns, times, marker=style["marker"], color=style["color"],
                   label=style["label"], linewidth=2, markersize=8)
-        # Fitted dashed line with legend entry
+        # Fitted dashed line — fold R² into the legend label
         ax.loglog(N_range, c * N_range ** alpha, linestyle="--",
                   color=style["color"], alpha=0.65, linewidth=1.2,
-                  label=f"  {c:.2e}·N^{alpha:.2f} fit")
-        # Annotate R² at the end of the fit line
-        ax.annotate(
-            f"$R^2$={r2:.3f}",
-            xy=(N_range[-1], c * N_range[-1] ** alpha),
-            fontsize=7, color=style["color"],
-            ha="left", va="center",
-            xytext=(4, 0), textcoords="offset points",
-        )
+                  label=f"  {c:.2e}$\\cdot N^{{{alpha:.2f}}}$  ($R^2$={r2:.3f})")
 
     ax.set_xlabel("Path resolution N")
     ax.set_ylabel("Wall-clock time (s)")
@@ -106,14 +98,15 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
             ax2.axhline(th, xmin=(xi - 0.4) / len(methods),
                         xmax=(xi + 0.4) / len(methods),
                         color="black", linestyle=":", linewidth=1.5, alpha=0.7)
-        ax2.text(xi, alphas[xi] + 0.05, f"$R^2$={r2:.3f}", ha="center", fontsize=9)
+        ax2.text(xi, alphas[xi] + 0.05, f"$R^2$={r2:.3f}", ha="center", fontsize=9,
+                 bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85, edgecolor="none"))
 
     ax2.set_xticks(x)
     ax2.set_xticklabels(labels, rotation=15, ha="right", fontsize=10)
-    ax2.set_ylabel("Fitted exponent α  (t ≈ c·N^α)")
+    ax2.set_ylabel(r"Fitted exponent $\alpha$  ($t \approx c \cdot N^\alpha$)")
     ax2.set_title(
         "Fitted Complexity Exponents\n"
-        "(dotted = theoretical; note: Cholesky dominated by O(M·N²) per-path cost)"
+        r"(dotted = theoretical; note: Cholesky dominated by $O(M \cdot N^2)$ per-path cost)"
     )
     ax2.set_ylim(0, max(alphas) * 1.35)
 
@@ -168,7 +161,7 @@ def plot_error_vs_rank(df: pd.DataFrame, out_path: str):
     ax.set_xlabel("rSVD target rank k")
     ax.set_ylabel("Relative error (%)")
     ax.set_title(
-        "H-matrix Approximation Quality vs Rank\n"
+        "Low-rank rSVD Approximation Quality vs Rank\n"
         "Both metrics on shared log-scale — MC noise dominates price error at high rank"
     )
     ax.legend(fontsize=9, loc="upper right")
@@ -186,7 +179,7 @@ def plot_construction_breakdown(df: pd.DataFrame, out_path: str):
     Separates the per-method one-time setup cost from the per-path Monte Carlo cost:
       - Cholesky:  covariance matrix build + LLT factorization (construction) vs M·N² MC loop
       - FFT:       fGn eigenvalue computation + FFTW plan creation  (negligible) vs M·N·logN MC
-      - H-matrix:  covariance build + rSVD (non-trivial)  vs  M·N·k MC loop
+      - rSVD:      covariance build + rSVD (non-trivial)  vs  M·N·k MC loop
 
     Requires time_vs_N.csv to have construction_time_s and mc_time_s columns.
     """
@@ -229,7 +222,8 @@ def plot_construction_breakdown(df: pd.DataFrame, out_path: str):
             total  = tc_i + tmc_i
             pct    = tc_i / total * 100 if total > 0 else 0
             ax.text(x[i] + offset, total * 1.03, f"{pct:.1f}%",
-                    ha="center", fontsize=7, color=style["color"])
+                    ha="center", fontsize=7, color=style["color"],
+                    bbox=dict(boxstyle="round,pad=0.15", facecolor="white", alpha=0.85, edgecolor="none"))
 
     ax.set_xticks(x)
     ax.set_xticklabels([f"N={n}" for n in Ns])
@@ -274,10 +268,10 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
     # Exclude hmatrix_freed for the comparison panel (use theoretical_freed separately)
     methods_plot = ["cholesky", "fft", "hmatrix", "hmatrix_freed"]
     method_labels = {
-        "cholesky":     "Dense Cholesky  O(N²)",
-        "fft":          "Circulant+FFT   O(N)",
-        "hmatrix":      "H-matrix (C held)  O(N²)",
-        "hmatrix_freed": "H-matrix (C freed)  O(N·k)",
+        "cholesky":      r"Dense Cholesky  $O(N^2)$",
+        "fft":           r"Circulant+FFT   $O(N)$",
+        "hmatrix":       r"rSVD (C held)   $O(N^2)$",
+        "hmatrix_freed": r"rSVD (C freed)  $O(Nk)$",
     }
     method_ls = {
         "cholesky":      "-",
@@ -322,7 +316,7 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
 
     ax.set_xlabel("Path resolution N")
     ax.set_ylabel("Theoretical peak memory (MB)")
-    ax.set_title("Peak Memory vs N\n(dashed = L3 threshold; Cholesky/hmatrix cross at N~1500)")
+    ax.set_title("Peak Memory vs $N$\n(dashed = L3 threshold; Cholesky/rSVD cross at $N \\approx 1500$)")
     ax.legend(fontsize=8)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
 
@@ -337,7 +331,8 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
         ax2.axhline(BANDWIDTH_GBS, color="black", linestyle="--", linewidth=1.5,
                     label=f"Rated M2 bandwidth ({BANDWIDTH_GBS:.0f} GB/s)")
         for i, (n, b) in enumerate(zip(Ns, bw)):
-            ax2.text(i, b + 1, f"{b:.0f}", ha="center", fontsize=10)
+            ax2.text(i, b + 1, f"{b:.0f}", ha="center", fontsize=10,
+                     bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85, edgecolor="none"))
         ax2.set_xticks(range(len(Ns)))
         ax2.set_xticklabels([f"N={n}" for n in Ns])
         ax2.set_ylabel("Estimated bandwidth (GB/s)")

@@ -139,7 +139,7 @@ def plot_surface(H_grid, nu_grid, price_grid, out_path, M):
     sns.heatmap(df_heat, ax=ax, annot=True, fmt=".1f", cmap="viridis",
                 cbar_kws={"label": "Asian call price"},
                 linewidths=0.4, linecolor="white")
-    ax.set_xlabel("Vol-of-vol  nu")
+    ax.set_xlabel(r"Vol-of-vol  $\nu$")
     ax.set_ylabel("Hurst exponent  H")
     ax.set_title("ATM Price vs (H, nu)\nLow H (rough) = higher price")
     # seaborn.heatmap places the first DataFrame row (H=0.05) at the TOP of the
@@ -156,12 +156,12 @@ def plot_surface(H_grid, nu_grid, price_grid, out_path, M):
     for nu_val, color in zip(nu_grid, colors):
         nu_idx = list(nu_grid).index(nu_val)
         ax2.plot(H_grid, price_grid[:, nu_idx], marker="o", linewidth=2,
-                 markersize=6, color=color, label=f"nu={nu_val:.2f}")
+                 markersize=6, color=color, label=f"$\\nu$={nu_val:.2f}")
 
     ax2.set_xlabel("Hurst exponent H")
     ax2.set_ylabel("Asian call price")
     ax2.set_title("Price vs Roughness H\n(for each vol-of-vol nu)")
-    ax2.legend(fontsize=9, title="nu")
+    ax2.legend(fontsize=9, title=r"$\nu$")
 
     fig.savefig(out_path, dpi=150)
     print(f"  Saved: {out_path}")
@@ -194,7 +194,7 @@ def plot_strike_sensitivity(H_grid, K_grid, results, nu_fixed, out_path):
     ax.set_ylabel("Asian call price")
     ax.set_title(
         f"Asian Call Price vs Strike for Varying H\n"
-        f"(nu={nu_fixed:.2f}, S0={S0:.0f}, T={T:.0f}yr;  * = calibrated)"
+        f"($\\nu$={nu_fixed:.2f}, S0={S0:.0f}, T={T:.0f}yr;  * = calibrated)"
     )
     ax.set_ylim(y_lo, y_hi)
     ax.legend(fontsize=9, loc="upper right")
