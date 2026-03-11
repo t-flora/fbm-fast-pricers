@@ -48,11 +48,11 @@ The per-path triangular solve costs $O(N^2)$, so the full MC loop costs $O(MN^2)
 
 **File:** `src/fft/fft.hpp` | **Cost:** $O(N \log N)$ setup, $O(N \log N)$ per path
 
-Based on the **Davies–Harte** (1987) / **Wood–Chan** (1994) exact method. The key insight: fBM **increments** $\delta W_k = W_{(k+1)\Delta t} - W_{k\Delta t}$ (fractional Gaussian noise, fGn) are stationary even though fBM itself is not. Stationarity means $\operatorname{Cov}(\delta W_i,\, \delta W_{i+k})$ depends only on the lag $k$, not on the absolute position $i$. A covariance matrix whose $(i,j)$ entry depends only on $|i-j|$ has constant diagonals — by definition, it is **Toeplitz**. A Toeplitz matrix can be embedded into a circulant, and circulant matrices are diagonalized by the DFT, whose eigenvalues are the FFT of the circulant's first row.
+Based on the **Davies–Harte** (1987) / **Wood–Chan** (1994) exact method. The key insight: fBM **increments** $\delta W_k = W_{(k+1)\Delta t} - W_{k\Delta t}$ (fractional Gaussian noise, fGn) are stationary even though fBM itself is not. Stationarity means $\text{Cov}(\delta W_i,\, \delta W_{i+k})$ depends only on the lag $k$, not on the absolute position $i$. A covariance matrix whose $(i,j)$ entry depends only on $|i-j|$ has constant diagonals — by definition, it is **Toeplitz**. A Toeplitz matrix can be embedded into a circulant, and circulant matrices are diagonalized by the DFT, whose eigenvalues are the FFT of the circulant's first row.
 
 **fGn autocovariance** at lag $k$ (with time step $\Delta t = T/N$):
 
-$$\gamma(k) = \frac{\Delta t^{2H}}{2}\!\left(|k+1|^{2H} + |k-1|^{2H} - 2|k|^{2H}\right)$$
+$$\gamma(k) = \frac{\Delta t^{2H}}{2}\left(|k+1|^{2H} + |k-1|^{2H} - 2|k|^{2H}\right)$$
 
 **Embedding:** size-$2N$ circulant first row $c = [\gamma(0), \ldots, \gamma(N{-}1), 0, \gamma(N{-}1), \ldots, \gamma(1)]$
 
