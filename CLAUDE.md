@@ -184,6 +184,21 @@ All in `papers-bg/`:
 - `fast-butterfly-fft.pdf` — Candès, Demanet & Ying (2008): theoretical basis for low-rank off-diagonal blocks in smooth kernel matrices (motivates H-matrix structure)
 - `hybrid-scheme-brownian-semistationary-process.pdf` — Bennedsen, Lunde & Pakkanen (2017): hybrid scheme for BSS processes — better simulation accuracy for rough kernels (H < 0.5), identified as future work
 
+## Documentation Formatting
+
+All mathematical content in `.md` files must use LaTeX, not Unicode approximations:
+
+- Use `$O(N^2)$`, not `O(N²)` or `O(N^2)` in plain text
+- Use `$\times$`, `$\cdot$`, not `×`, `·`
+- Use `$\alpha$`, `$\sigma$`, `$\kappa$`, `$\gamma$`, not `α`, `σ`, `κ`, `γ`
+- Use `$\pm$`, `$\approx$`, `$\propto$`, `$\leq$`, not `±`, `≈`, `∝`, `≤`
+- Use `$\frac{1}{2}$` or `$\tfrac{1}{2}$`, not `½` or `\frac 1 2` (unbraced)
+- Use `$L^\top$`, not `Lᵀ`
+- Use `$\sqrt{M}$`, not `√M`
+- Use `$\sum_{i}$`, not `Σ_i`
+- Complexity annotations in tables and prose: always wrap in `$...$`
+- Backtick code spans are for actual C++ identifiers and code output only — mathematical formulas that appear in backticks should be converted to inline LaTeX
+
 ## Commit Convention
 
 Use `type: short description` (one line, no period). Common types:
