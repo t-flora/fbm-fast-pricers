@@ -30,7 +30,7 @@ $C$ is not estimated from data — it is computed exactly from this formula. The
 
 $$V = \max\left(\frac{1}{N}\sum_{i=1}^{N} S_i - K,\; 0\right)$$
 
-The path-dependent average eliminates any closed-form pricing formula. **Monte Carlo** is the standard method: simulate $M$ independent stock-price paths (each driven by a fresh fBM sample), compute the payoff $V$ on each, and average. The option price is $\hat{p} = e^{-rT} \cdot \frac{1}{M}\sum_{m=1}^{M} V^{(m)}$, with standard error $\sigma_V / \sqrt{M}$.
+The path-dependent average eliminates any closed-form pricing formula. **Monte Carlo** is the standard method: simulate $M$ independent stock-price paths (each driven by a fresh fBM sample), compute the payoff $V$ on each, and average. The option price is $\hat{p} = e^{-rT} \cdot \frac{1}{M}\sum_{m=1}^{M} V^{(m)}$, with standard error $e^{-rT} \sigma_V / \sqrt{M}$.
 
 ---
 
@@ -142,7 +142,7 @@ uv run python data/validate_asian.py [--M 5000] [--N 252]
 
 ### Phase 3 — Sensitivity: $H \times \nu$ heatmap + price vs strike
 
-`plots/plot_sensitivity.py` sweeps $H \in \{0.05, 0.10, 0.15, 0.20\}$ and $\nu \in \{0.1, 0.2, 0.3, 0.4\}$, producing an ATM price heatmap and price-vs-strike curves for varying H.
+`plots/plot_sensitivity.py` sweeps $H \in \{0.05, 0.10, 0.15, 0.20\}$ and $\nu \in \{0.1, 0.2, 0.3, 0.4\}$, producing an ATM price heatmap and price-vs-strike curves for varying $H$.
 
 ```bash
 uv run python plots/plot_sensitivity.py [--M 10000] [--N 252]
