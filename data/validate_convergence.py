@@ -158,7 +158,7 @@ def main() -> None:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
     fig.suptitle(
         f"MC Convergence: Asian Call Price vs Paths  "
-        f"(N={N}, H={H}, ν={NU}, K={K}, T={T})",
+        f"(N={N}, H={H}, $\\nu$={NU}, K={K}, T={T})",
         fontsize=11,
     )
 
@@ -191,7 +191,7 @@ def main() -> None:
     # Theoretical -0.5 reference line passing through last data point
     theory_line = std_prices[-1] * (m_arr[-1] / m_arr) ** 0.5
     ax2.loglog(m_arr, theory_line, ":", color="gray", lw=1.2,
-               label="theory: slope = −0.50")
+               label=r"theory: slope $= -0.50$")
 
     ax2.set_xlabel("Paths $M$")
     ax2.set_ylabel(r"MC std-error  $\sigma(\hat{p}_M)$")

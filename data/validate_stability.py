@@ -196,17 +196,17 @@ def panel_fft_clipping(ax, N: int = 252):
                alpha=0.7, label="H = 0.5 boundary")
     ax.plot(H_arr[pos_mask], min_lam[pos_mask],
             "o-", color="#2980b9", linewidth=2, markersize=7,
-            label="min(λ) ≥ 0")
+            label=r"$\min(\lambda) \geq 0$")
     if neg_mask.any():
         ax.plot(H_arr[neg_mask], min_lam[neg_mask],
                 "s--", color="#e74c3c", linewidth=2, markersize=7,
-                label="min(λ) < 0 (clipped)")
+                label=r"$\min(\lambda) < 0$ (clipped)")
 
     ax.set_xlabel("Hurst exponent H")
     ax.set_ylabel("Minimum circulant eigenvalue")
     ax.set_title(
         f"FFT: min eigenvalue vs H  (N={N})\n"
-        "Negative → must clip to 0 → simulation inexact"
+        r"Negative $\rightarrow$ must clip to 0 $\rightarrow$ simulation inexact"
     )
     ax.legend(fontsize=8)
 
@@ -229,6 +229,7 @@ def panel_fft_clipping(ax, N: int = 252):
             xytext=(H_arr[worst_idx] - 0.12, min_lam[worst_idx] - 0.001),
             fontsize=8,
             arrowprops=dict(arrowstyle="->", color="gray"),
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, edgecolor="lightgray"),
         )
 
 
@@ -254,13 +255,14 @@ def panel_rsvd_conditioning(ax, N: int = 252):
 
     color_k = "#8e44ad"
     ax.semilogy(ranks_arr, kappas_arr, "o-", color=color_k,
-                linewidth=2, markersize=7, label="κ(L_k) = √S_max / √S_min")
+                linewidth=2, markersize=7,
+                label=r"$\kappa(L_k) = \sqrt{S_{\max}} / \sqrt{S_{\min}}$")
     ax.set_xlabel("rSVD rank k")
-    ax.set_ylabel("Condition number κ(L_k)", color=color_k)
+    ax.set_ylabel(r"Condition number $\kappa(L_k)$", color=color_k)
     ax.tick_params(axis="y", labelcolor=color_k)
     ax.set_title(
         f"rSVD: condition number vs rank  (N={N}, H={H_DEFAULT})\n"
-        "Large κ → near-singular factor → noisy paths"
+        r"Large $\kappa$ $\rightarrow$ near-singular factor $\rightarrow$ noisy paths"
     )
 
     ax2 = ax.twinx()
@@ -276,9 +278,7 @@ def panel_rsvd_conditioning(ax, N: int = 252):
 
     # Annotate the MC noise floor
     ax2.axhline(100 * 0.4 / 23.58, color="#27ae60", linestyle=":",
-                linewidth=1, alpha=0.6)
-    ax2.text(ranks[-1] * 0.85, 100 * 0.4 / 23.58 * 1.2,
-             "MC noise floor", fontsize=7, color="#27ae60", alpha=0.7)
+                linewidth=1, alpha=0.6, label="MC noise floor")
 
 
 # ── Panel (c): Cholesky covariance conditioning vs N ─────────────────────────
@@ -295,7 +295,8 @@ def panel_cholesky_conditioning(ax):
     k_arr  = np.array(kappas)
 
     ax.loglog(Ns_arr, k_arr, "o-", color="#e74c3c",
-              linewidth=2.5, markersize=8, label="κ(C) = λ_max / λ_min")
+              linewidth=2.5, markersize=8,
+              label=r"$\kappa(C) = \lambda_{\max} / \lambda_{\min}$")
 
     # Fit power law
     with warnings.catch_warnings():
@@ -307,13 +308,12 @@ def panel_cholesky_conditioning(ax):
     N_range = np.logspace(np.log10(Ns_arr[0]), np.log10(Ns_arr[-1]), 200)
     ax.loglog(N_range, c_fit * N_range ** alpha, "--", color="#e74c3c",
               alpha=0.5, linewidth=1.5,
-              label=f"fit: κ ≈ {c_fit:.2f}·N^{{{alpha:.2f}}}")
+              label=f"fit: $\\kappa \\approx {c_fit:.2f} \\cdot N^{{{alpha:.2f}}}$")
 
     # Machine epsilon thresholds
     eps = np.finfo(float).eps
-    ax.axhline(1.0 / eps, color="gray", linestyle=":", linewidth=1.2)
-    ax.text(Ns_arr[-1] * 1.02, 1.0 / eps * 1.2, "1/ε (float64)",
-            fontsize=8, color="gray")
+    ax.axhline(1.0 / eps, color="gray", linestyle=":", linewidth=1.2,
+               label=r"$1/\varepsilon$ (float64 limit)")
 
     ax.set_xlabel("Path resolution N")
     ax.set_ylabel("Condition number κ(C)")
@@ -329,7 +329,8 @@ def panel_cholesky_conditioning(ax):
         if n in (252, 1000):
             ax.annotate(f"N={n}\nκ={k:.0e}", xy=(n, k),
                         xytext=(n * 1.05, k * 0.6),
-                        fontsize=7, arrowprops=dict(arrowstyle="->", color="gray"))
+                        fontsize=7, arrowprops=dict(arrowstyle="->", color="gray"),
+                        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, edgecolor="lightgray"))
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -347,7 +348,7 @@ def main():
     fig, axes = plt.subplots(1, 3, figsize=(17, 5.5), constrained_layout=True)
     fig.text(
         0.5, 1.01,
-        f"Numerical stability analysis  (H={H_DEFAULT}, ν={NU_DEFAULT}, T={T}yr, N={args.N} for panels a–b)",
+        f"Numerical stability analysis  (H={H_DEFAULT}, $\\nu$={NU_DEFAULT}, T={T}yr, N={args.N} for panels a\u2013b)",
         ha="center", fontsize=10, style="italic",
     )
 

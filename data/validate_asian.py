@@ -152,10 +152,11 @@ def plot_validation(Ks, levy_prices, rfsv_means, rfsv_stds, out_path):
     ax.axvline(S0, color="gray", linestyle=":", linewidth=1, alpha=0.6, label="ATM (K=S0)")
     ax.set_xlabel("Strike K")
     ax.set_ylabel("Asian Call Price")
-    ax.set_title("Asian Call Price vs Strike\n(S0=100, T=1, ν=0.30)")
+    ax.set_title(r"Asian Call Price vs Strike" "\n" r"(S0=100, T=1, $\nu$=0.30)")
     ax.legend(fontsize=8.5, loc="upper right")
-    ax.annotate("* calibrated  † error bars = ±1σ MC (3 seeds)",
-                xy=(0.01, 0.01), xycoords="axes fraction", fontsize=7.5, alpha=0.7)
+    ax.annotate(r"* calibrated  $\dagger$ error bars = $\pm 1\sigma$ MC (3 seeds)",
+                xy=(0.01, 0.01), xycoords="axes fraction", fontsize=7.5, alpha=0.9,
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="lightgray"))
 
     # ── Panel (b): Roughness Premium ─────────────────────────────────────────
     ax2 = axes[1]
@@ -168,8 +169,8 @@ def plot_validation(Ks, levy_prices, rfsv_means, rfsv_stds, out_path):
                 linewidth=0.6, width=2.5)
         ax2.axhline(0, color="black", linewidth=0.8)
         ax2.set_xlabel("Strike K")
-        ax2.set_ylabel("Roughness premium (H=0.10 − H=0.50)")
-        ax2.set_title("Roughness Premium\nRFSV(H=0.10) − RFSV(H=0.50)")
+        ax2.set_ylabel(r"Roughness premium (H=0.10 $-$ H=0.50)")
+        ax2.set_title(r"Roughness Premium" "\n" r"RFSV(H=0.10) $-$ RFSV(H=0.50)")
 
         # Annotation offset as fraction of y-range to avoid clipping
         y_vals = premium[premium != 0]
@@ -180,7 +181,8 @@ def plot_validation(Ks, levy_prices, rfsv_means, rfsv_stds, out_path):
             va_dir = "bottom" if y >= 0 else "top"
             y_txt  = y + offset if y >= 0 else y - offset
             ax2.text(x, y_txt, f"{sign}{y:.2f}",
-                     ha="center", va=va_dir, fontsize=8)
+                     ha="center", va=va_dir, fontsize=8,
+                     bbox=dict(boxstyle="round,pad=0.15", facecolor="white", alpha=0.85, edgecolor="none"))
 
     fig.savefig(out_path, dpi=150)
     print(f"  Saved: {out_path}")

@@ -257,14 +257,14 @@ def plot_iv_smiles(dfs: list, spot: float, out_path: str, mu0s: dict = None):  #
         if not rfsv_ok.empty:
             ax.plot(rfsv_ok["strike"] / spot, rfsv_ok["rfsv_iv"] * 100,
                     color="#e74c3c", linewidth=2, marker="o", markersize=4,
-                    label=f"RFSV IV (H={H_CALIB}, nu={NU_CALIB})")
+                    label=f"RFSV IV (H={H_CALIB}, $\\nu$={NU_CALIB})")
 
         ax.axvline(1.0, color="gray", linestyle=":", linewidth=1, alpha=0.6)
         ax.set_xlabel("Moneyness  K/S")
         ax.set_ylabel("Implied Volatility (%)")
         ax.set_title(
             f"IV Smile — expiry {exp}  (T={T:.3f} yr)\n"
-            f"RFSV scaled to  σ_eff={sigma_eff:.3f}"
+            f"RFSV scaled to  $\\sigma_{{\\mathrm{{eff}}}}$={sigma_eff:.3f}"
         )
 
         # x-axis: round moneyness ticks
@@ -285,7 +285,7 @@ def plot_iv_smiles(dfs: list, spot: float, out_path: str, mu0s: dict = None):  #
         ax.legend(fontsize=9)
 
     fig.suptitle(
-        f"RFSV Model vs SPY Market Implied Volatility  (H={H_CALIB}, nu={NU_CALIB})",
+        f"RFSV Model vs SPY Market Implied Volatility  (H={H_CALIB}, $\\nu$={NU_CALIB})",
         fontsize=13,
     )
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
