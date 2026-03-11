@@ -90,7 +90,7 @@ Benchmarked at $M = 10{,}000$ paths, $N \in \{252, 500, 1000\}$:
 | Circulant+FFT | $O(MN \log N)$ | 1.01 | $1.0 \times 10^{-3}$ | 1.000 |
 | Low-rank rSVD $(k=32)$ | $O(MNk + N^2k)$ | 1.06 | $3.0 \times 10^{-4}$ | 1.000 |
 
-FFT is theoretically $O(N \log N)$ and low-rank rSVD $O(MNk + N^2k)$, but both **appear linear** in the fitted data. This is an artifact of the narrow $N$ range tested: going from $N = 252$ to $N = 1000$ is only a $4\times$ increase, over which $\log_2 N$ grows from $\approx 7.97$ to $\approx 9.97$ — a factor of 1.25. A 25% multiplicative drift in the prefactor is smaller than the noise in a three-point log-log regression, so the fitted exponent comes out as 1.01 rather than something distinguishably above 1. The $\log N$ factor has not vanished; it is simply unresolvable at this scale. To observe it cleanly, you would need to benchmark over a range of $100\times$ or more in $N$.
+The full FFT loop theoretically scales as $O(MN \log N)$ and low-rank rSVD as $O(MNk + N^2k)$, but both **appear linear in $N$** in the fitted data. This is an artifact of the narrow $N$ range tested: going from $N = 252$ to $N = 1000$ is only a $4\times$ increase, over which $\log_2 N$ grows from $\approx 7.97$ to $\approx 9.97$ — a factor of 1.25. A 25% multiplicative drift in the prefactor is smaller than the noise in a three-point log-log regression, so the fitted exponent comes out as 1.01 rather than something distinguishably above 1. The $\log N$ factor has not vanished; it is simply unresolvable at this scale. To observe it cleanly, you would need to benchmark over a range of $100\times$ or more in $N$.
 
 **Memory** ($N = 1000$, numbers measured on Apple M2 with L3 = 16 MB, peak DRAM bandwidth $\approx 100$ GB/s; L3 size and bandwidth vary by platform):
 
@@ -116,7 +116,7 @@ At **larger $N$**, the $L$ matrix grows as $N^2$. Once it no longer fits in the 
 
 Slow convergence is fundamental: the singular spectrum of $C$ decays slowly for rough $H = 0.1$.
 
-**Reference price:** $p_\text{ref} = 23.58$. There is no closed-form formula for this option, so we need a Monte Carlo ground truth to measure low-rank approximation error against. We run both Cholesky and FFT — two independent simulation methods (one strictly exact, one asymptotically exact) — with 500,000 paths each and average the results. The Monte Carlo standard error at 500k paths is $\sigma_V / \sqrt{500{,}000} \approx 35 / 707 \approx 0.05$ price units, much smaller than the low-rank pricing errors being measured (which range from ~0.1 to ~2 at low rank). Both methods draw from the identical $N$-dimensional Gaussian, so pooling their results is equivalent to a single $1{,}000{,}000$-path run, halving the Monte Carlo standard error relative to either method alone. The parameters $H = 0.10$, $\nu = 0.30$, $S_0 = K = 100$, $T = 1$ are the calibrated RFSV model values stored in `src/common/params.hpp`; $S_0 = K = 100$ means the option is struck at-the-money.
+**Reference price:** $p_\text{ref} = 23.58$. There is no closed-form formula for this option, so we need a Monte Carlo ground truth to measure low-rank approximation error against. We run both Cholesky and FFT — two independent simulation methods (one strictly exact, one asymptotically exact) — with 500,000 paths each and average the results. The Monte Carlo standard error at 500k paths is $\sigma_V / \sqrt{500{,}000} \approx 35 / 707 \approx 0.05$ price units, much smaller than the low-rank pricing errors being measured (which range from ~0.1 to ~2 at low rank). Both methods draw from the identical $N$-dimensional Gaussian, so pooling their results is equivalent to a single $1{,}000{,}000$-path run, reducing the Monte Carlo standard error by a factor of $\sqrt{2}$ relative to either method alone. The parameters $H = 0.10$, $\nu = 0.30$, $S_0 = K = 100$, $T = 1$ are the calibrated RFSV model values stored in `src/common/params.hpp`; $S_0 = K = 100$ means the option is struck at-the-money.
 
 ---
 
@@ -222,7 +222,6 @@ uv run python plots/plot_sensitivity.py
 ## Project Structure
 
 ```
-papers-bg/              Source papers (references below)
 data/
   calibrate.py          Estimates H, nu from Oxford-Man or yfinance
   rfsv_model.py         Vectorized Python fBM Monte Carlo engine

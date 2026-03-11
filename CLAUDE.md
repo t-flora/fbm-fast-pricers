@@ -70,7 +70,6 @@ uv run python plots/plot_scaling.py
 
 ```
 final-project/
-├── papers-bg/            Source papers (see references in README)
 ├── data/
 │   ├── raw/              Oxford-Man CSV downloaded here
 │   ├── calibrate.py      Estimates H and nu (Oxford-Man or --source yfinance)
@@ -175,14 +174,6 @@ See `TODO.md` for full task descriptions and priority ordering. Summary of new f
 - `validate_iv.py`: `--M 3000 --N 63`, calibration M=1000
 - `plot_sensitivity.py`: `--M 10000 --N 252` (noise floor ≈ 0.3)
 - `validate_convergence.py`: M up to 25000
-
-## Background Papers
-
-All in `papers-bg/`:
-- `vol-is-rough.pdf` — Gatheral, Jaisson & Rosenbaum (2014): empirical H ≈ 0.1, RFSV model definition
-- `2010_HMT_random_review.pdf` — Halko, Martinsson & Tropp (2011): rSVD Algorithm 4.4 implemented in `rsvd.hpp`
-- `fast-butterfly-fft.pdf` — Candès, Demanet & Ying (2008): theoretical basis for low-rank off-diagonal blocks in smooth kernel matrices (motivates H-matrix structure)
-- `hybrid-scheme-brownian-semistationary-process.pdf` — Bennedsen, Lunde & Pakkanen (2017): hybrid scheme for BSS processes — better simulation accuracy for rough kernels (H < 0.5), identified as future work
 
 ## Documentation Formatting
 

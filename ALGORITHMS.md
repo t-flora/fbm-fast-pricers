@@ -237,7 +237,7 @@ The fBM covariance matrix is **smooth** away from its diagonal. Intuitively:
 far-apart time points have a slowly-varying, well-approximated covariance.
 This means the **off-diagonal blocks** are numerically low-rank.
 
-Candès, Demanet & Ying (2008) (`papers-bg/fast-butterfly-fft.pdf`) formalize this:
+Candès, Demanet & Ying (2008) formalize this:
 a kernel `C(s,t)` that is smooth away from the diagonal has off-diagonal blocks with
 singular values decaying rapidly. A true **H-matrix** (Hierarchical matrix) exploits this
 recursively: it partitions the matrix into a quad-tree, keeps near-diagonal blocks dense
@@ -257,8 +257,7 @@ singular values decay more slowly than for $H = 0.5$ — the rough spectrum is h
 
 ### The rSVD algorithm (`src/hmatrix/rsvd.hpp`)
 
-This implements Halko, Martinsson & Tropp (2011) Algorithm 4.4
-(`papers-bg/2010_HMT_random_review.pdf`).
+This implements Halko, Martinsson & Tropp (2011) Algorithm 4.4.
 
 **Stage A — Random sketch** (`rsvd.hpp:22-29`):
 ```cpp
