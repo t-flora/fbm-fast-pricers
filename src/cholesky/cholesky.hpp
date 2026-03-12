@@ -10,9 +10,8 @@
 #include "common/rng.hpp"
 
 namespace cholesky {
-namespace {
 
-double price(int N, int M_paths, unsigned seed = 42) {
+inline double price(int N, int M_paths, unsigned seed = 42) {
     using namespace params;
     double dt = T / N;
     auto rng = make_rng(seed);
@@ -40,7 +39,7 @@ double price(int N, int M_paths, unsigned seed = 42) {
 // Construction vs MC timing breakdown
 struct CholeskyTimed { double price, t_construct, t_mc; };
 
-CholeskyTimed price_timed(int N, int M_paths, unsigned seed = 42) {
+inline CholeskyTimed price_timed(int N, int M_paths, unsigned seed = 42) {
     using namespace params;
     using Clock = std::chrono::high_resolution_clock;
     double dt = T / N;
@@ -70,5 +69,4 @@ CholeskyTimed price_timed(int N, int M_paths, unsigned seed = 42) {
     return { std::exp(-r * T) * payoff_sum / M_paths, t_construct, t_mc };
 }
 
-} // anonymous namespace
 } // namespace cholesky

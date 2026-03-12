@@ -5,7 +5,7 @@
 //
 // Memory metrics (macOS mach API):
 //   peak_rss_mb       — resident set size after the call (proxy for peak allocation)
-//   theoretical_peak_mb — analytical formula: Cholesky N^2*8, FFT 2N*16, hmatrix N^2*8 or N*k*8
+//   theoretical_peak_mb — analytical formula: Cholesky N^2*8, FFT 2N*16, rsvd N^2*8 or N*k*8
 //   cache_pressure    — peak_rss_mb / L3_MB  (>1 means L3 spill)
 //   est_bandwidth_GBs — Cholesky only: bytes_accessed / wall_time_s (memory-bound check)
 //
@@ -25,8 +25,8 @@
 
 #include "cholesky/cholesky.hpp"
 #include "fft/fft.hpp"
-#include "hmatrix/hmatrix.hpp"
-#include "hmatrix/rsvd.hpp"
+#include "rsvd/lowrank.hpp"
+#include "rsvd/rsvd.hpp"
 #include "common/params.hpp"
 #include "common/covariance.hpp"
 
@@ -65,7 +65,7 @@ int main() {
                 "peak_rss_mb,theoretical_peak_mb,cache_pressure,est_bandwidth_GBs\n";
 
     std::ofstream csv_err("benchmarks/results/error_vs_rank.csv");
-    csv_err << "rank_k,N,reference_price,hmatrix_price,abs_price_error,"
+    csv_err << "rank_k,N,reference_price,rsvd_price,abs_price_error,"
                "rel_price_error,frob_error,construction_time_s,mc_time_s\n";
 
     // ── Wall-clock time vs N ─────────────────────────────────────────────────
@@ -109,33 +109,33 @@ int main() {
         // rSVD (C held): peak = N x N covariance matrix (O(N^2)) + Lk (N x k)
         constexpr int RANK_K = 32;
         rss_before = rss_mb();
-        auto rh = hmatrix::price_timed(N, M_PATHS, RANK_K);
+        auto rh = lowrank::price_timed(N, M_PATHS, RANK_K);
         double rss_hmat = rss_mb();
         double t_hmat = rh.t_construct + rh.t_mc;
         double theory_hmat_mb = static_cast<double>(N) * N * 8.0 / (1024.0 * 1024.0);
         double cache_hmat = theory_hmat_mb / L3_MB;
 
-        csv_time << "hmatrix," << N << "," << M_PATHS << "," << t_hmat << "," << rh.price
+        csv_time << "rsvd," << N << "," << M_PATHS << "," << t_hmat << "," << rh.price
                  << "," << rh.t_construct << "," << rh.t_mc << ","
                  << (rss_hmat - rss_before) << "," << theory_hmat_mb << ","
                  << cache_hmat << ",\n";
-        std::cout << "  hmatrix  : price=" << rh.price << "  time=" << t_hmat
+        std::cout << "  rsvd     : price=" << rh.price << "  time=" << t_hmat
                   << "s  theory=" << theory_hmat_mb << " MB\n";
 
         // rSVD (C freed before MC): peak during MC = Lk only (N x k)
         rss_before = rss_mb();
-        auto rhf = hmatrix::price_freed_timed(N, M_PATHS, RANK_K);
+        auto rhf = lowrank::price_freed_timed(N, M_PATHS, RANK_K);
         double rss_hmat_f = rss_mb();
         double t_hmat_f = rhf.t_construct + rhf.t_mc;
         // After C freed: only Lk (N * k doubles) remains
         double theory_freed_mb = static_cast<double>(N) * RANK_K * 8.0 / (1024.0 * 1024.0);
         double cache_freed = theory_freed_mb / L3_MB;
 
-        csv_time << "hmatrix_freed," << N << "," << M_PATHS << "," << t_hmat_f << ","
+        csv_time << "rsvd_freed," << N << "," << M_PATHS << "," << t_hmat_f << ","
                  << rhf.price << "," << rhf.t_construct << "," << rhf.t_mc << ","
                  << (rss_hmat_f - rss_before) << "," << theory_freed_mb << ","
                  << cache_freed << ",\n";
-        std::cout << "  hmat_free: price=" << rhf.price << "  time=" << t_hmat_f
+        std::cout << "  rsvd_free: price=" << rhf.price << "  time=" << t_hmat_f
                   << "s  theory_mc=" << theory_freed_mb << " MB\n";
     }
 
@@ -186,7 +186,7 @@ int main() {
         double t_construct = elapsed_s(t0);
 
         t0 = Clock::now();
-        double p_approx = hmatrix::price(N_MEDIUM, M_PATHS, k, /*seed=*/42);
+        double p_approx = lowrank::price(N_MEDIUM, M_PATHS, k, /*seed=*/42);
         double t_mc = elapsed_s(t0);
 
         double abs_err = std::abs(p_approx - p_ref);
@@ -209,5 +209,5 @@ int main() {
     std::cout << "\nMemory notes:\n"
               << "  Rated M2 bandwidth: " << BANDWIDTH_GBS << " GB/s\n"
               << "  L3 cache: " << L3_MB << " MB  (cache_pressure > 1 => L3 spill)\n"
-              << "  hmatrix_freed keeps only Lk (N*k*8 bytes) during MC loop\n";
+              << "  rsvd_freed keeps only Lk (N*k*8 bytes) during MC loop\n";
 }

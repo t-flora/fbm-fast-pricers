@@ -25,17 +25,16 @@
 #include "common/rng.hpp"
 
 namespace fft_pricer {
-namespace {
 
 // fGn autocovariance at lag k (Var = dt^{2H}, negative for H<0.5 at k≥1)
-static inline double fgn_cov(int k, double H, double dt) {
+inline double fgn_cov(int k, double H, double dt) {
     double h2 = 2.0 * H;
     if (k == 0) return std::pow(dt, h2);
     double km1 = (k == 1) ? 0.0 : std::pow(k - 1.0, h2);
     return 0.5 * std::pow(dt, h2) * (std::pow(k + 1.0, h2) + km1 - 2.0 * std::pow(k, h2));
 }
 
-double price(int N, int M_paths, unsigned seed = 42) {
+inline double price(int N, int M_paths, unsigned seed = 42) {
     using namespace params;
     double dt = T / N;
     int M = 2 * N;
@@ -106,7 +105,7 @@ double price(int N, int M_paths, unsigned seed = 42) {
 // Construction vs MC timing breakdown
 struct FFTTimed { double price, t_construct, t_mc; };
 
-FFTTimed price_timed(int N, int M_paths, unsigned seed = 42) {
+inline FFTTimed price_timed(int N, int M_paths, unsigned seed = 42) {
     using namespace params;
     using Clock = std::chrono::high_resolution_clock;
     double dt = T / N;
@@ -169,5 +168,4 @@ FFTTimed price_timed(int N, int M_paths, unsigned seed = 42) {
     return { std::exp(-r * T) * payoff_sum / M_paths, t_construct, t_mc };
 }
 
-} // anonymous namespace
 } // namespace fft_pricer

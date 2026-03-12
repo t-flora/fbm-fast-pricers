@@ -18,12 +18,11 @@
 #include "common/covariance.hpp"
 #include "common/asian_payoff.hpp"
 #include "common/rng.hpp"
-#include "hmatrix/rsvd.hpp"
+#include "rsvd/rsvd.hpp"
 
-namespace hmatrix {
-namespace {
+namespace lowrank {
 
-double price(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
+inline double price(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
     using namespace params;
     double dt = T / N;
 
@@ -56,7 +55,7 @@ double price(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
 // Construction vs MC timing breakdown
 struct HmatrixTimed { double price, t_construct, t_mc; };
 
-HmatrixTimed price_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
+inline HmatrixTimed price_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
     using namespace params;
     using Clock = std::chrono::high_resolution_clock;
     double dt = T / N;
@@ -90,7 +89,7 @@ HmatrixTimed price_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42
 // Compare to price_timed() where C stays alive (O(N^2)) throughout.
 struct HmatrixFreedTimed { double price, t_construct, t_mc; };
 
-HmatrixFreedTimed price_freed_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
+inline HmatrixFreedTimed price_freed_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
     using namespace params;
     using Clock = std::chrono::high_resolution_clock;
     double dt = T / N;
@@ -126,5 +125,4 @@ HmatrixFreedTimed price_freed_timed(int N, int M_paths, int rank_k = 16, unsigne
     return { std::exp(-r * T) * payoff_sum / M_paths, t_construct, t_mc };
 }
 
-} // anonymous namespace
-} // namespace hmatrix
+} // namespace lowrank
