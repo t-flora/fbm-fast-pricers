@@ -190,6 +190,62 @@ All mathematical content in `.md` files must use LaTeX, not Unicode approximatio
 - Complexity annotations in tables and prose: always wrap in `$...$`
 - Backtick code spans are for actual C++ identifiers and code output only — mathematical formulas that appear in backticks should be converted to inline LaTeX
 
+## Report Writing Style
+
+The report (`report-files/`) uses a distinctive style. Maintain it when drafting new sections.
+
+**Voice and structure**
+- First-person technical voice: "I implement", "I test", not "it is implemented"
+- Motivate before defining: state *why* something is needed, then define it formally
+- Short paragraphs (3–5 sentences each), one clear point per paragraph
+- Lead each subsection with the key claim; supporting detail follows
+
+**Equations and notation**
+- Every displayed equation is introduced in the preceding sentence and interpreted in the following one — never dropped naked
+- Use `\tfrac` for inline fractions in running text, `\frac` in displayed math
+- `\mathbb{E}^{\mathbb{Q}}` for risk-neutral expectation; `\mathcal{N}(0,C)` for distributions
+- Use `\text{Cov}`, `\text{Var}`, `\max`, `\min` (roman operators), not bare `Cov`, `max`
+- Complexity in prose: `$O(N^3)$` (not `O(N³)` or `O(N^3)` plain text)
+
+**Numbers and concreteness**
+- Every complexity claim is accompanied by a concrete number at $N = 252$ or $M = 10{,}000$
+- Leading constants matter: $N^3/3$, not $N^3$; always state the constant when it affects interpretation
+- Benchmark figures are cited numerically inline (e.g., "$\approx 1.54$"), not just described
+
+**Citations**
+- Use `\citep{}` for parenthetical references, `\citet{}` when the author is the grammatical subject
+- Include a short inline gloss on first citation: "Gatheral et al.~\citep{gatheral2018volatility} show that …"
+- Multiple related cites compressed: `\citep{gatheral2018volatility, mandelbrot1968fractional}`
+
+**Limitations and contested points**
+- Call out traps and non-obvious choices directly: "The key pitfall is…", "Note that setting $H=0.5$ alone does *not* recover GBM…"
+- Quantify the impact of every limitation (e.g., "28\% of eigenvalues negative, 15\% energy clipped")
+- End subsections with a one-sentence forward pointer when the limitation is addressed elsewhere
+
+**LaTeX mechanics (report-files/)**
+- `\usepackage{booktabs}` — always use `\toprule`, `\midrule`, `\bottomrule`; never `\hline`
+- `\usepackage{nicefrac}` for `\nicefrac{1}{2}` in compact inline fractions
+- Section files are `\input`-ed from `main.tex`; each file contains only `\section{}`…`\subsection{}` content, no preamble
+- Bibliography key: `\bibliography{bibliography}` (no `.bib` extension in the `\bibliography` command)
+- Do NOT use `i` as a matrix or time-step index in any section — it clashes with $i = \sqrt{-1}$ in the FFT sections. Use `j`, `k`, `m`, `n` instead.
+
+## Report Build
+
+```bash
+# From report-files/
+pdflatex -interaction=nonstopmode main.tex
+
+# Version every successful build — always do this after a compile
+ts=$(date +%Y%m%d_%H%M) && cp main.pdf versions/main_${ts}.pdf
+```
+
+Figures live in `plots/figures/` (gitignored); `main.tex` uses `\graphicspath{{../plots/figures/}}`.
+If figures are missing, copy from `plots/*.png`: `cp plots/*.png plots/figures/`.
+The `.bbl` file is generated once by `bibtex main`; after that, single `pdflatex` passes suffice.
+
+**Section files:** `sec1-intro.tex` through `sec7-futurework.tex` in `report-files/`.
+Track drafting status and all post-draft corrections in `report-plan.md` (gitignored).
+
 ## Commit Convention
 
 Use `type: short description` (one line, no period). Common types:
