@@ -26,13 +26,13 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "benchmarks", "resul
 METHOD_STYLE = {
     "cholesky": {"label": "Dense Cholesky",        "marker": "o", "color": "#e74c3c"},
     "fft":      {"label": "Circulant+FFT",          "marker": "s", "color": "#2ecc71"},
-    "hmatrix":  {"label": "Low-rank rSVD (k=32)",   "marker": "^", "color": "#3498db"},
+    "rsvd":     {"label": "Low-rank rSVD (k=32)",   "marker": "^", "color": "#3498db"},
 }
 
 THEORY_EXP = {
     "cholesky": 3.0,
     "fft":      1.0,
-    "hmatrix":  1.0,
+    "rsvd":     1.0,
 }
 
 
@@ -189,7 +189,7 @@ def plot_construction_breakdown(df: pd.DataFrame, out_path: str):
 
     M_paths = int(df["M_paths"].iloc[0]) if "M_paths" in df.columns else 10_000
     Ns      = np.sort(df["N"].unique()).astype(int)
-    methods = [m for m in ["cholesky", "fft", "hmatrix"] if m in df["method"].values]
+    methods = [m for m in ["cholesky", "fft", "rsvd"] if m in df["method"].values]
     n_m     = len(methods)
 
     fig, ax = plt.subplots(figsize=(10, 5), constrained_layout=True)
@@ -254,7 +254,7 @@ def plot_construction_breakdown(df: pd.DataFrame, out_path: str):
 def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
     """
     Two-panel memory plot from time_vs_N.csv:
-      (a) theoretical peak bytes vs N (log-log) — Cholesky O(N^2), FFT O(N), hmatrix variants
+      (a) theoretical peak bytes vs N (log-log) — Cholesky O(N^2), FFT O(N), rSVD variants
       (b) estimated memory bandwidth utilization for Cholesky (GB/s vs rated 100 GB/s)
     """
     L3_MB = 16.0
@@ -265,19 +265,19 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
         print("  Skipping memory plot (theoretical_peak_mb column missing).")
         return
 
-    # Exclude hmatrix_freed for the comparison panel (use theoretical_freed separately)
-    methods_plot = ["cholesky", "fft", "hmatrix", "hmatrix_freed"]
+    # Exclude rsvd_freed for the comparison panel (use theoretical_freed separately)
+    methods_plot = ["cholesky", "fft", "rsvd", "rsvd_freed"]
     method_labels = {
         "cholesky":      r"Dense Cholesky  $O(N^2)$",
         "fft":           r"Circulant+FFT   $O(N)$",
-        "hmatrix":       r"rSVD (C held)   $O(N^2)$",
-        "hmatrix_freed": r"rSVD (C freed)  $O(Nk)$",
+        "rsvd":       r"rSVD (C held)   $O(N^2)$",
+        "rsvd_freed": r"rSVD (C freed)  $O(Nk)$",
     }
     method_ls = {
         "cholesky":      "-",
         "fft":           "-",
-        "hmatrix":       "--",
-        "hmatrix_freed": ":",
+        "rsvd":       "--",
+        "rsvd_freed": ":",
     }
 
     Ns_all = np.sort(df["N"].unique()).astype(float)
@@ -300,7 +300,7 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
             continue
         color = METHOD_STYLE.get(method, {}).get("color", None)
         if color is None:
-            color = "#95a5a6"  # gray for hmatrix_freed
+            color = "#95a5a6"  # gray for rsvd_freed
         ax.loglog(sub["N"], sub["theoretical_peak_mb"],
                   marker="o", markersize=7, linewidth=2,
                   linestyle=method_ls[method], color=color,

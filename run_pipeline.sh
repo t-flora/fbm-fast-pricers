@@ -127,7 +127,7 @@ echo "── Collecting outputs → ${RUN_DIR} ──"
 mkdir -p "${RUN_DIR}/results"
 
 # Plots
-cp plots/*.png "${RUN_DIR}/" 2>/dev/null || true
+cp plots/figures/*.png "${RUN_DIR}/" 2>/dev/null || true
 
 # Benchmark CSVs and reference price
 cp benchmarks/results/*.csv  "${RUN_DIR}/results/" 2>/dev/null || true
