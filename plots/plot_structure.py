@@ -151,7 +151,7 @@ def main() -> None:
     ax_svd  = fig.add_subplot(gs[1, 1])
 
     fig.suptitle(
-        f"Structural Analysis: why FFT and low-rank rSVD work\n"
+        f"Structural analysis: why FFT and low-rank rSVD work\n"
         f"H = {H_rough},  N = {N_sm} (heatmaps),  N = {N_lg} (SVD)",
         fontsize=11, y=1.01,
     )
@@ -163,7 +163,7 @@ def main() -> None:
     plt.colorbar(im_a, ax=ax_fbm, fraction=0.046, pad=0.04)
     ax_fbm.set_title(
         "(a) fBM covariance  $C(t_i,t_j)$\n"
-        "Non-stationary — diagonals are NOT constant",
+        "non-stationary — diagonals are not constant",
         fontsize=9,
     )
     ax_fbm.set_xlabel("time step $j$")
@@ -203,7 +203,7 @@ def main() -> None:
     ax_diag.set_xlabel("lag $k$")
     ax_diag.set_ylabel("covariance  $C[i,\\, i+k]$")
     ax_diag.set_title(
-        "(c) Diagonal slice  $C[i,\\,i+k]$ vs lag $k$\n"
+        "(c) diagonal slice  $C[i,\\,i+k]$ vs lag $k$\n"
         "fGn rows overlap (Toeplitz); fBM rows diverge (non-stationary)",
         fontsize=9,
     )
@@ -237,7 +237,7 @@ def main() -> None:
     ax_svd.set_xlabel("rank $k$")
     ax_svd.set_ylabel("normalised singular value  $\\sigma_k / \\sigma_1$")
     ax_svd.set_title(
-        f"(d) Off-diagonal block singular value decay  (N={N_lg})\n"
+        f"(d) off-diagonal block singular value decay  (N={N_lg})\n"
         r"Rougher $H$ $\rightarrow$ slower decay $\rightarrow$ higher rank needed for accuracy",
         fontsize=9,
     )
@@ -245,7 +245,8 @@ def main() -> None:
     ax_svd.grid(True, which="both", alpha=0.3)
 
     # ── Save ──────────────────────────────────────────────────────────────────
-    out = os.path.join(os.path.dirname(__file__), "structure_analysis.png")
+    out = os.path.join(os.path.dirname(__file__), "figures", "structure_analysis.png")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"Saved  {out}")
 

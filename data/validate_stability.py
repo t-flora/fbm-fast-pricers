@@ -319,7 +319,7 @@ def panel_cholesky_conditioning(ax):
     ax.set_ylabel("Condition number κ(C)")
     ax.set_title(
         f"Cholesky: κ(C) vs N  (H={H_DEFAULT})\n"
-        "Shows ill-conditioning growth; eventual risk of non-PD failure"
+        "shows ill-conditioning growth; eventual risk of non-PD failure"
     )
     ax.legend(fontsize=9)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
@@ -342,7 +342,8 @@ def main():
     parser.add_argument("--rank-max", type=int, default=128)
     args = parser.parse_args()
 
-    out_dir  = os.path.join(os.path.dirname(__file__), "..", "plots")
+    out_dir  = os.path.join(os.path.dirname(__file__), "..", "plots", "figures")
+    os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "stability_report.png")
 
     fig, axes = plt.subplots(1, 3, figsize=(17, 5.5), constrained_layout=True)

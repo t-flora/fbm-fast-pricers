@@ -152,7 +152,7 @@ def plot_validation(Ks, levy_prices, rfsv_means, rfsv_stds, out_path):
     ax.axvline(S0, color="gray", linestyle=":", linewidth=1, alpha=0.6, label="ATM (K=S0)")
     ax.set_xlabel("Strike K")
     ax.set_ylabel("Asian Call Price")
-    ax.set_title(r"Asian Call Price vs Strike" "\n" r"(S0=100, T=1, $\nu$=0.30)")
+    ax.set_title(r"Asian call price vs strike" "\n" r"(S0=100, T=1, $\nu$=0.30)")
     ax.legend(fontsize=8.5, loc="upper right")
     ax.annotate(r"* calibrated  $\dagger$ error bars = $\pm 1\sigma$ MC (3 seeds)",
                 xy=(0.01, 0.01), xycoords="axes fraction", fontsize=7.5, alpha=0.9,
@@ -170,7 +170,7 @@ def plot_validation(Ks, levy_prices, rfsv_means, rfsv_stds, out_path):
         ax2.axhline(0, color="black", linewidth=0.8)
         ax2.set_xlabel("Strike K")
         ax2.set_ylabel(r"Roughness premium (H=0.10 $-$ H=0.50)")
-        ax2.set_title(r"Roughness Premium" "\n" r"RFSV(H=0.10) $-$ RFSV(H=0.50)")
+        ax2.set_title(r"Roughness premium" "\n" r"RFSV(H=0.10) $-$ RFSV(H=0.50)")
 
         # Annotation offset as fraction of y-range to avoid clipping
         y_vals = premium[premium != 0]
@@ -212,7 +212,8 @@ def main():
                         help="Time steps per year (default: 252)")
     args = parser.parse_args()
 
-    out_dir = os.path.join(os.path.dirname(__file__), "..", "plots")
+    out_dir = os.path.join(os.path.dirname(__file__), "..", "plots", "figures")
+    os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "validate_asian.png")
 
     print(f"Asian option validation (M={args.M}, N={args.N}) ...")

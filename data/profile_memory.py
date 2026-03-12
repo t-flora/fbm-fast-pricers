@@ -138,7 +138,7 @@ def plot_memory_profile(results: dict, out_path: str):
     ax2.set_xlabel("Total elements  M × N")
     ax2.set_ylabel("Peak heap allocation (bytes)")
     ax2.set_title(
-        "Memory vs Total Elements\n"
+        "Memory vs total elements\n"
         f"Fitted slope = {slope:.1f} bytes/elem  "
         f"({slope/8:.1f}x float64 arrays)"
     )
@@ -169,7 +169,8 @@ def main():
     N_values = [n for n in [64, 128, 252, 512, 1024] if n <= args.max_N]
     M_values = [m for m in [100, 1_000, 5_000, 10_000] if m <= args.max_M]
 
-    out_dir = os.path.join(os.path.dirname(__file__), "..", "plots")
+    out_dir = os.path.join(os.path.dirname(__file__), "..", "plots", "figures")
+    os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "memory_profile.png")
 
     print(f"Profiling Python RFSV engine memory (H={H}, nu={NU})")

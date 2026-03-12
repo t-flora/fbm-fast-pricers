@@ -263,7 +263,7 @@ def plot_iv_smiles(dfs: list, spot: float, out_path: str, mu0s: dict = None):  #
         ax.set_xlabel("Moneyness  K/S")
         ax.set_ylabel("Implied Volatility (%)")
         ax.set_title(
-            f"IV Smile — expiry {exp}  (T={T:.3f} yr)\n"
+            f"IV smile — expiry {exp}  (T={T:.3f} yr)\n"
             f"RFSV scaled to  $\\sigma_{{\\mathrm{{eff}}}}$={sigma_eff:.3f}"
         )
 
@@ -285,7 +285,7 @@ def plot_iv_smiles(dfs: list, spot: float, out_path: str, mu0s: dict = None):  #
         ax.legend(fontsize=9)
 
     fig.suptitle(
-        f"RFSV Model vs SPY Market Implied Volatility  (H={H_CALIB}, $\\nu$={NU_CALIB})",
+        f"RFSV model vs SPY market implied volatility  (H={H_CALIB}, $\\nu$={NU_CALIB})",
         fontsize=13,
     )
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -303,7 +303,8 @@ def main():
                         help="Number of expirations to fetch (default: 2)")
     args = parser.parse_args()
 
-    out_dir = os.path.join(os.path.dirname(__file__), "..", "plots")
+    out_dir = os.path.join(os.path.dirname(__file__), "..", "plots", "figures")
+    os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "validate_iv.png")
 
     print("Fetching SPY option chains ...")

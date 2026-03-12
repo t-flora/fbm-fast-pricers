@@ -78,7 +78,7 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
 
     ax.set_xlabel("Path resolution N")
     ax.set_ylabel("Wall-clock time (s)")
-    ax.set_title("Scaling: Wall-clock Time vs N")
+    ax.set_title("Scaling: wall-clock time vs N")
     ax.legend(fontsize=7.5, loc="upper left", ncol=1)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
 
@@ -105,7 +105,7 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
     ax2.set_xticklabels(labels, rotation=15, ha="right", fontsize=10)
     ax2.set_ylabel(r"Fitted exponent $\alpha$  ($t \approx c \cdot N^\alpha$)")
     ax2.set_title(
-        "Fitted Complexity Exponents\n"
+        "Fitted complexity exponents\n"
         r"(dotted = theoretical; note: Cholesky dominated by $O(M \cdot N^2)$ per-path cost)"
     )
     ax2.set_ylim(0, max(alphas) * 1.35)
@@ -161,7 +161,7 @@ def plot_error_vs_rank(df: pd.DataFrame, out_path: str):
     ax.set_xlabel("rSVD target rank k")
     ax.set_ylabel("Relative error (%)")
     ax.set_title(
-        "Low-rank rSVD Approximation Quality vs Rank\n"
+        "Low-rank rSVD approximation quality vs rank\n"
         "Both metrics on shared log-scale — MC noise dominates price error at high rank"
     )
     ax.legend(fontsize=9, loc="upper right")
@@ -229,7 +229,7 @@ def plot_construction_breakdown(df: pd.DataFrame, out_path: str):
     ax.set_xticklabels([f"N={n}" for n in Ns])
     ax.set_ylabel("Wall-clock time (s)")
     ax.set_title(
-        "One-time Setup vs Per-path Monte Carlo Cost\n"
+        "One-time setup vs per-path Monte Carlo cost\n"
         "Light portion = construction;  dark = MC loop;  % = construction fraction",
         fontsize=10,
     )
@@ -316,7 +316,7 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
 
     ax.set_xlabel("Path resolution N")
     ax.set_ylabel("Theoretical peak memory (MB)")
-    ax.set_title("Peak Memory vs $N$\n(dashed = L3 threshold; Cholesky/rSVD cross at $N \\approx 1500$)")
+    ax.set_title("Peak memory vs $N$\n(dashed = L3 threshold; Cholesky/rSVD cross at $N \\approx 1500$)")
     ax.legend(fontsize=8)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
 
@@ -337,7 +337,7 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
         ax2.set_xticklabels([f"N={n}" for n in Ns])
         ax2.set_ylabel("Estimated bandwidth (GB/s)")
         ax2.set_title(
-            "Cholesky Memory-Bandwidth Utilization\n"
+            "Cholesky memory-bandwidth utilization\n"
             "(bytes_accessed = N^2 * 8 * M  / wall_time_s)"
         )
         ax2.legend(fontsize=9)
@@ -356,7 +356,8 @@ def main():
     parser.add_argument("--results-dir", default=RESULTS_DIR)
     args = parser.parse_args()
 
-    out_dir    = os.path.dirname(__file__)
+    out_dir    = os.path.join(os.path.dirname(__file__), "figures")
+    os.makedirs(out_dir, exist_ok=True)
     time_path  = os.path.join(args.results_dir, "time_vs_N.csv")
     error_path = os.path.join(args.results_dir, "error_vs_rank.csv")
 

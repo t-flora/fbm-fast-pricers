@@ -141,7 +141,7 @@ def plot_surface(H_grid, nu_grid, price_grid, out_path, M):
                 linewidths=0.4, linecolor="white")
     ax.set_xlabel(r"Vol-of-vol  $\nu$")
     ax.set_ylabel("Hurst exponent  H")
-    ax.set_title("ATM Price vs (H, nu)\nLow H (rough) = higher price")
+    ax.set_title("ATM price vs (H, nu)\nlow H (rough) = higher price")
     # seaborn.heatmap places the first DataFrame row (H=0.05) at the TOP of the
     # y-axis, which reverses the natural ordering (H increases downward).
     # invert_yaxis() flips it so H increases upward, matching the line plot in
@@ -160,7 +160,7 @@ def plot_surface(H_grid, nu_grid, price_grid, out_path, M):
 
     ax2.set_xlabel("Hurst exponent H")
     ax2.set_ylabel("Asian call price")
-    ax2.set_title("Price vs Roughness H\n(for each vol-of-vol nu)")
+    ax2.set_title("Price vs roughness H\n(for each vol-of-vol nu)")
     ax2.legend(fontsize=9, title=r"$\nu$")
 
     fig.savefig(out_path, dpi=150)
@@ -193,7 +193,7 @@ def plot_strike_sensitivity(H_grid, K_grid, results, nu_fixed, out_path):
     ax.set_xlabel("Strike K")
     ax.set_ylabel("Asian call price")
     ax.set_title(
-        f"Asian Call Price vs Strike for Varying H\n"
+        f"Asian call price vs strike for varying H\n"
         f"($\\nu$={nu_fixed:.2f}, S0={S0:.0f}, T={T:.0f}yr;  * = calibrated)"
     )
     ax.set_ylim(y_lo, y_hi)
@@ -213,7 +213,8 @@ def main():
                         help="Time steps per year (default: 252)")
     args = parser.parse_args()
 
-    out_dir = os.path.dirname(__file__)
+    out_dir = os.path.join(os.path.dirname(__file__), "figures")
+    os.makedirs(out_dir, exist_ok=True)
 
     # ── Surface: H × nu at K=ATM ─────────────────────────────────────────────
     print(f"Computing H × nu price grid (K=ATM=100, M={args.M}, N={args.N}) ...")

@@ -157,7 +157,7 @@ def main() -> None:
     # ── Plot ──────────────────────────────────────────────────────────────────
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
     fig.suptitle(
-        f"MC Convergence: Asian Call Price vs Paths  "
+        f"MC convergence: Asian call price vs paths  "
         f"(N={N}, H={H}, $\\nu$={NU}, K={K}, T={T})",
         fontsize=11,
     )
@@ -177,7 +177,7 @@ def main() -> None:
     ax1.set_xscale("log")
     ax1.set_xlabel("Paths $M$")
     ax1.set_ylabel("Asian call price")
-    ax1.set_title("(a) Price converges to reference as $M$ grows")
+    ax1.set_title("(a) price converges to reference as $M$ grows")
     ax1.legend(fontsize=9)
     ax1.grid(True, which="both", alpha=0.3)
 
@@ -196,13 +196,14 @@ def main() -> None:
     ax2.set_xlabel("Paths $M$")
     ax2.set_ylabel(r"MC std-error  $\sigma(\hat{p}_M)$")
     ax2.set_title(
-        f"(b) Log-log: $\\sigma \\propto M^{{-0.5}}$\n"
+        f"(b) log-log: $\\sigma \\propto M^{{-0.5}}$\n"
         f"Fitted slope = {slope:.3f},  $R^2$ = {r2:.3f}",
     )
     ax2.legend(fontsize=9)
     ax2.grid(True, which="both", alpha=0.3)
 
-    out = os.path.join(os.path.dirname(__file__), "..", "plots", "convergence.png")
+    out = os.path.join(os.path.dirname(__file__), "..", "plots", "figures", "convergence.png")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"\nSaved  {os.path.normpath(out)}")
     plt.show()
