@@ -19,7 +19,7 @@ benchmarks/results/*.csv
 benchmarks/results/*.txt
 
 # Plot outputs (generated)
-plots/*.png
+plots/figures/
 
 # Oxford-Man raw data (too large / proprietary)
 data/raw/
@@ -27,3 +27,10 @@ data/raw/
 # IDE
 .DS_Store
 papers-bg/
+
+# Working notes (not for commit)
+report_outline.md
+report-plan.md
+
+# Pipeline run snapshots (generated)
+plots/runs/
