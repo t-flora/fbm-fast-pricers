@@ -17,7 +17,7 @@ struct RSVD {
 inline RSVD rsvd(const Eigen::MatrixXd& A, int k, int p = 5, int q = 2,
                  unsigned seed = 42)
 {
-    int m = A.rows(), n = A.cols();
+    int n = A.cols();
     int l = k + p;
 
     // Stage A: form a sketch
@@ -28,16 +28,21 @@ inline RSVD rsvd(const Eigen::MatrixXd& A, int k, int p = 5, int q = 2,
         for (int i = 0; i < l; ++i)
             Omega(j, i) = dist(rng);
 
-    Eigen::MatrixXd Y = A * Omega;
+    // Thin orthonormal basis for the range of Y (m×l)
+    auto orth = [](const Eigen::MatrixXd& Y) {
+        Eigen::HouseholderQR<Eigen::MatrixXd> qr(Y);
+        return Eigen::MatrixXd(qr.householderQ() * Eigen::MatrixXd::Identity(Y.rows(), Y.cols()));
+    };
 
-    // Power iteration for better accuracy with slowly-decaying spectra
+    Eigen::MatrixXd Q = orth(A * Omega);
+
+    // Subspace iteration for slowly-decaying spectra. Re-orthonormalizing after
+    // each product keeps small singular directions from being lost to round-off:
+    // without it, Y = (A A^T)^q A Omega scales by (s_1/s_l)^{2q+1} ~ 1e15 at H=0.1, k=128.
     for (int iter = 0; iter < q; ++iter) {
-        Y = A * (A.transpose() * Y);
+        Eigen::MatrixXd W = orth(A.transpose() * Q);
+        Q = orth(A * W);
     }
-
-    // QR decomposition of Y
-    Eigen::HouseholderQR<Eigen::MatrixXd> qr(Y);
-    Eigen::MatrixXd Q = qr.householderQ() * Eigen::MatrixXd::Identity(m, l);
 
     // Stage B: project and SVD on small matrix
     Eigen::MatrixXd B = Q.transpose() * A;   // l×n

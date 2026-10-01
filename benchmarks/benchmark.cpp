@@ -4,10 +4,14 @@
 // "Approximate" method: low-rank rSVD — truncation error controlled by rank k.
 //
 // Memory metrics (macOS mach API):
-//   peak_rss_mb       — resident set size after the call (proxy for peak allocation)
-//   theoretical_peak_mb — analytical formula: Cholesky N^2*8, FFT 2N*16, rsvd N^2*8 or N*k*8
-//   cache_pressure    — peak_rss_mb / L3_MB  (>1 means L3 spill)
-//   est_bandwidth_GBs — Cholesky only: bytes_accessed / wall_time_s (memory-bound check)
+//   peak_rss_mb       — RSS growth across the call (RSS after minus RSS before). NOT a true
+//                       peak: buffers are freed on return, so this only reflects pages the
+//                       allocator kept resident (it can read 0). Prefer theoretical_peak_mb.
+//   theoretical_peak_mb — size of the dominant matrix held during the MC loop:
+//                       Cholesky N^2*8 (L), FFT 2N*16, rsvd N^2*8 (C held) or N*k*8 (C freed)
+//   cache_pressure    — theoretical_peak_mb / CACHE_MB  (>1 means it no longer fits on-chip)
+//   est_bandwidth_GBs — Cholesky only: (N(N+1)/2)*8*M bytes / total wall time. An effective streaming
+//                       rate for L, not measured DRAM traffic (L fits in cache for N <= 1000).
 //
 // Outputs:
 //   benchmarks/results/time_vs_N.csv
@@ -49,7 +53,8 @@ static size_t current_rss_bytes() {
 
 static double rss_mb() { return current_rss_bytes() / (1024.0 * 1024.0); }
 
-// L3 cache size on this Mac (Apple M2 = 16 MB).
+// Largest on-chip cache on the test machine: Apple M2 performance-cluster L2 = 16 MB
+// (`sysctl hw.perflevel0.l2cachesize`). The M2 has no L3; the name is kept for the CSV.
 static constexpr double L3_MB = 16.0;
 // M2 rated memory bandwidth (GB/s) — from Apple spec sheet.
 static constexpr double BANDWIDTH_GBS = 100.0;
@@ -72,15 +77,15 @@ int main() {
     for (int N : Ns) {
         std::cout << "\n── N = " << N << " (M=" << M_PATHS << " paths) ──\n";
 
-        // Cholesky: peak = N x N lower-triangular L matrix = N*(N+1)/2 doubles
+        // Cholesky: C is factored in place, so one N x N matrix (N^2 doubles) holds L
         double rss_before = rss_mb();
         auto rc = cholesky::price_timed(N, M_PATHS);
         double rss_chol = rss_mb();
         double t_chol = rc.t_construct + rc.t_mc;
         double theory_chol_mb = static_cast<double>(N) * N * 8.0 / (1024.0 * 1024.0);
         double cache_chol = theory_chol_mb / L3_MB;
-        // Memory-bandwidth proxy: L matrix re-read for each of M paths → N^2 * 8 * M bytes
-        double bytes_accessed = static_cast<double>(N) * N * 8.0 * M_PATHS;
+        // Memory-bandwidth proxy: lower triangle of L re-read for each of M paths
+        double bytes_accessed = static_cast<double>(N) * (N + 1) / 2.0 * 8.0 * M_PATHS;
         double bw_chol = bytes_accessed / t_chol / 1e9;
 
         csv_time << "cholesky," << N << "," << M_PATHS << "," << t_chol << "," << rc.price
@@ -208,6 +213,6 @@ int main() {
     std::cout << "\nResults written to benchmarks/results/\n";
     std::cout << "\nMemory notes:\n"
               << "  Rated M2 bandwidth: " << BANDWIDTH_GBS << " GB/s\n"
-              << "  L3 cache: " << L3_MB << " MB  (cache_pressure > 1 => L3 spill)\n"
+              << "  Largest cache (M2 P-cluster L2): " << L3_MB << " MB  (cache_pressure > 1 => spill)\n"
               << "  rsvd_freed keeps only Lk (N*k*8 bytes) during MC loop\n";
 }

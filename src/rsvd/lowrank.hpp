@@ -6,8 +6,8 @@
 // Approximate Cholesky factor: L_k = U * diag(sqrt(S))  →  L_k * L_k^T ≈ C.
 // Path generation: log_vol = nu * L_k * z   (z ~ N(0, I_k))  →  O(N*k) per path.
 //
-// This captures the low-rank structure insight that the fBM covariance is effectively
-// low-rank away from the diagonal; rank k controls the accuracy-speed tradeoff.
+// Rank k controls the accuracy-speed tradeoff. Note this is an approximate sampler:
+// paths have covariance nu^2 * C_k, not nu^2 * C, and the truncated variance is lost.
 // Construction cost: O(N^2*k) via power-iteration rSVD.
 // Per-path cost: O(N*k) vs O(N^2) for dense Cholesky.
 #include <Eigen/Dense>
@@ -53,9 +53,9 @@ inline double price(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
 }
 
 // Construction vs MC timing breakdown
-struct HmatrixTimed { double price, t_construct, t_mc; };
+struct LowRankTimed { double price, t_construct, t_mc; };
 
-inline HmatrixTimed price_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
+inline LowRankTimed price_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
     using namespace params;
     using Clock = std::chrono::high_resolution_clock;
     double dt = T / N;
@@ -87,9 +87,9 @@ inline HmatrixTimed price_timed(int N, int M_paths, int rank_k = 16, unsigned se
 
 // C freed before MC loop: peak RSS drops to O(N*k) after construction.
 // Compare to price_timed() where C stays alive (O(N^2)) throughout.
-struct HmatrixFreedTimed { double price, t_construct, t_mc; };
+struct LowRankFreedTimed { double price, t_construct, t_mc; };
 
-inline HmatrixFreedTimed price_freed_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
+inline LowRankFreedTimed price_freed_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
     using namespace params;
     using Clock = std::chrono::high_resolution_clock;
     double dt = T / N;
