@@ -34,3 +34,15 @@ report-plan.md
 
 # Pipeline run snapshots (generated)
 plots/runs/
+
+# LaTeX build artifacts (report-files/main.pdf is kept as the deliverable)
+report-files/*.aux
+report-files/*.bbl
+report-files/*.blg
+report-files/*.fdb_latexmk
+report-files/*.fls
+report-files/*.log
+report-files/*.out
+report-files/*.synctex.gz
+report-files/versions/
+report-files/style-edits.md

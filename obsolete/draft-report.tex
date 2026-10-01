@@ -1,0 +1,115 @@
+\documentclass{article}
+
+% ready for submission
+% \usepackage[final]{aaj2026}
+\bibliographystyle{plainnat}
+\usepackage[numbers]{natbib}
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{amsmath}
+
+\title{Fast Monte Carlo Pricing of Asian Options under Rough Fractional Stochastic Volatility}
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+
+\author{%
+  Tiago Flora \\
+  Department of Mathematics\\
+  University of Chicago \\
+  \texttt{tflora@uchicago.edu} \\
+  % examples of more authors
+}
+
+
+\begin{document}
+
+
+\maketitle
+
+  \begin{abstract}  We study Monte Carlo pricing of a fixed-strike arithmetic Asian call option under the
+  Rough Fractional Stochastic Volatility (RFSV) model \citep{gatheral2018volatility},
+  \end{abstract}
+
+
+  \section{Motivation}
+
+  \subsection{Asian options and rough volatility}
+  In this project, I am interested in pricing fixed-rate, arithmetic-average Asian call options, which have payoff $C(T) = \max (A(0,T)-K,0)$, where $A(0,T) = \frac 1 T \int^T_0 S_tdt$, and $S_t$ is the price of the underlying security with respect to time. Importantly, I assume that $\log \sigma_t$, or the log-volatility of $S_t$, follows a fractional Brownian motion with Hurst parameter 0.1, following the famous result from Gatheral, Jaisson \& Rosenbaum in \cite{gatheral2018volatility}. I also evaluate simulations with other values of $H$.
+
+  If we formulate the problem as a function of discrete prices, such that $A(0,T) = \frac 1 T \sum^T_j S_{t_j}$, then even under Black-Scholes dynamics each $S_{t_j}$ is a lognormal random variable, and the sum of lognormal random variables is not lognormal. The probability density function for the sum of correlated lognormal variables has no known exact, closed-form analytical representation. Our case is worse: under rough fractional stochastic volatility (RFSV), $S_t$ is no longer lognormal, and we cannot use approximations like L\'{e}vy's moment-matching approximations \cite{levy1992pricing}.
+
+ Under RFSV, we have $\log \sigma_t = \mu + \nu W^H_t$. Because the volatility paths are (negatively) correlated and rough, calculating the exact joint expectation $E[S_{t_i} S_{t_j}]$ for the second moment becomes complex and solving the moment-matching equations practically impossible: it would require computing the expectation of the integral of the volatility path, which always depends on the entire continuous history of the volatility up to that point. The ``vol-of-vol" ($\nu$) parameter also introduces heavy skew and fat tails into the price distribution that a simple 2-moment lognormal approximation cannot capture.
+
+ In these circumstances, Monte Carlo sampling becomes a viable option. It doesn't require a known probability density function; we can simulate $M$ paths of the RFSV process and calculate the payoff on each path. Our price estimate is simply given by:
+ \begin{align}
+    \lim_{M \to \infty} \frac{1}{M} \sum_{m=1}^M e^{-rT} \max\left(A^{(m)} - K, 0\right) = \mathbb{E}^{\mathbb{Q}}\left[e^{-rT} \max(A - K, 0)\right]
+ \end{align}
+    Where $\mathbb Q$ is the risk-neutral measure.
+
+\subsection{The computational bottleneck of MC sampling for RFSV}
+    
+ Naïve MC sampling requires $O(N^3)$ setup work, for $N$ being the number of simulated time-steps until expiration: fBM is non-Markovian, so no forward recursion exists; every path requires drawing from $\mathcal{N}(0, C)$ where $C$ is a dense $N \times N$ positive-definite matrix. It then also requires $O(N^2)$ work per path, as we multiply the lower-triangular $L$ from the decomposition by a white noise vector to construct a correlated fBM path. For $N = 252$ trading days \& $M = 10{,}000$ paths, the $O(N^3)$ Cholesky factorization alone requires $N^3/3 \approx 5.3$ million FLOPs (the leading constant is $1/3$, versus $2/3$ for LU); the $O(N^2)$ per-path cost aggregates to a total $O(MN^2)$ workload, which dominates for $M$ large enough for reasonable accuracy. And since errors for MC sampling famously fall with $1/\sqrt M$, $M$ might have to be quite large depending on the spread size that matters to you.
+ 
+This problem is relevant to any firm unit with Asian options in its portfolio; trading desks, for instance, often need to run parameter sweeps to build and update sensitivity surfaces, and manage real-time risk by running pricing engines with deviations to inputs. If one moves from inter- to intraday monitoring, $N$ grows by a large factor, and speeding up sampling can prove itself an unlikely life-saver.
+  
+\subsection{Approach and scope}
+
+I implement and benchmark 3 algorithms, including the na\"ive implementation described in the previous section. 
+
+
+
+To speed up both setup and MC path sampling, I tested 
+
+% \begin{table}
+%   \caption{Sample table title}
+%   \label{sample-table}
+%   \centering
+%   \begin{tabular}{lll}
+%     \toprule
+%     \multicolumn{2}{c}{Part}                   \\
+%     \cmidrule(r){1-2}
+%     Name     & Description     & Size ($\mu$m) \\
+%     \midrule
+%     Dendrite & Input terminal  & $\sim$100     \\
+%     Axon     & Output terminal & $\sim$10      \\
+%     Soma     & Cell body       & up to $10^6$  \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}
+
+
+\medskip
+
+\bibliography{biblio.bib}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\section{Appendix / supplemental material}
+
+
+Optionally include supplemental material (complete proofs, additional experiments and plots) in appendix.
+All such materials \textbf{SHOULD be included in the main submission.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+
+\end{document}
