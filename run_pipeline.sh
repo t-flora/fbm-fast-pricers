@@ -70,6 +70,12 @@ else
     echo "── Step 1/10: cmake build — SKIPPED (--no-build) ──"
 fi
 
+# ── Tests: stop before benchmarking if any sampler check fails ─────────────────
+echo ""
+echo "── Tests: C++ samplers + Python engine ──"
+./build/test_samplers
+uv run pytest tests/ -q
+
 # ── Step 2: C++ benchmark ─────────────────────────────────────────────────────
 echo ""
 echo "── Step 2/10: C++ benchmark ──"
