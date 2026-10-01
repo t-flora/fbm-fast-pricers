@@ -9,7 +9,7 @@ Usage:
     uv run python data/profile_memory.py [--max-N 512] [--max-M 10000]
 
 Output:
-    plots/memory_profile.png
+    plots/figures/memory_profile.png
 """
 
 import argparse
@@ -32,7 +32,7 @@ NU   = 0.30
 T    = 1.0
 
 # Hardware reference (Apple M2)
-L3_MB = 16.0
+L3_MB = 16.0  # Apple M2 P-cluster L2, the largest on-chip cache (M2 has no L3)
 L3_BYTES = L3_MB * 1024 * 1024
 
 
@@ -102,11 +102,11 @@ def plot_memory_profile(results: dict, out_path: str):
 
     # Mark L3 spill threshold
     ax.axhline(L3_BYTES, color="#e74c3c", linestyle="--", linewidth=1.2,
-               alpha=0.7, label=f"L3 cache ({L3_MB:.0f} MB)")
+               alpha=0.7, label=f"M2 L2 cache ({L3_MB:.0f} MB)")
 
     ax.set_xlabel("Time steps N")
     ax.set_ylabel("Peak heap allocation (bytes)")
-    ax.set_title("Memory vs N\n(log-log; dashed = L3 spill threshold)")
+    ax.set_title("Memory vs N\n(log-log; dashed = 16 MB cache threshold)")
     ax.legend(fontsize=8, ncol=2)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(
         lambda x, _: f"{x/1e6:.1f} MB" if x >= 1e6 else f"{x/1e3:.0f} KB"
@@ -133,7 +133,7 @@ def plot_memory_profile(results: dict, out_path: str):
     ax2.plot(x_line, 8.0 * x_line, "gray", linewidth=1, linestyle=":",
              label="8 bytes/element (1 array)")
     ax2.axhline(L3_BYTES, color="#e74c3c", linestyle="--", linewidth=1.2,
-                alpha=0.7, label=f"L3 ({L3_MB:.0f} MB)")
+                alpha=0.7, label=f"M2 L2 ({L3_MB:.0f} MB)")
 
     ax2.set_xlabel("Total elements  M × N")
     ax2.set_ylabel("Peak heap allocation (bytes)")
@@ -176,7 +176,7 @@ def main():
     print(f"Profiling Python RFSV engine memory (H={H}, nu={NU})")
     print(f"N in {N_values}")
     print(f"M in {M_values}")
-    print(f"L3 cache: {L3_MB:.0f} MB = {L3_BYTES:.0f} bytes\n")
+    print(f"Largest cache (M2 L2): {L3_MB:.0f} MB = {L3_BYTES:.0f} bytes\n")
 
     print(f"{'N':>6} {'M':>8} {'peak_MB':>10} {'theory_MB':>12} "
           f"{'ratio':>7} {'wall_s':>8} {'cache_pressure':>15}")
@@ -205,9 +205,9 @@ def main():
             n_arrays = peak / theory
             pressure = peak / L3_BYTES
             if pressure > 1.0:
-                note = f"  *** L3 SPILL (pressure={pressure:.1f}x)"
+                note = f"  *** CACHE SPILL (pressure={pressure:.1f}x)"
             elif pressure > 0.5:
-                note = f"  (half L3: {pressure:.2f}x)"
+                note = f"  (half cache: {pressure:.2f}x)"
             else:
                 note = ""
             print(f"  N={N:4d} M={M:6,d}: {peak/1e6:6.2f} MB peak "

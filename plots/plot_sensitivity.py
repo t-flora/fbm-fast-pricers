@@ -15,8 +15,8 @@ Usage:
     uv run python plots/plot_sensitivity.py [--M 10000] [--N 252]
 
 Output:
-    plots/sensitivity_surface.png
-    plots/sensitivity_strike.png
+    plots/figures/sensitivity_surface.png
+    plots/figures/sensitivity_strike.png
 
 ──────────────────────────────────────────────────────────────────────────
 BEGINNER'S GUIDE
@@ -24,9 +24,12 @@ BEGINNER'S GUIDE
 
 Why does price increase as H decreases?
 
-  This is the "roughness premium".  The RFSV model has sigma_t = exp(nu * W_t^H).
-  Rougher processes (smaller H) produce more erratic volatility paths — lots of
-  sharp spikes.  For Asian options, this matters because:
+  The RFSV model has sigma_t = exp(nu * W_t^H) with Var(nu W_t^H) = nu^2 t^{2H}.
+  For t < 1 year, t^{2H} is larger when H is smaller, so at fixed nu a lower H
+  means log-vol both wanders further from 0 AND is rougher.  The price increase
+  therefore mixes a variance effect with a roughness effect; isolating pure
+  roughness would require rescaling nu to hold integrated variance fixed.
+  Higher log-vol variance raises the price because:
   (1) Jensen's inequality: E[f(sigma)] > f(E[sigma]) for convex f.
       Higher variability in sigma => higher expected payoff.
   (2) ATM options are most sensitive to vol changes (high gamma, high vega).
@@ -87,6 +90,9 @@ NU_GRID = np.array([0.10, 0.20, 0.30, 0.40])
 K_GRID  = np.array([80.0, 90.0, 100.0, 110.0, 120.0])
 
 
+SEED = 42
+
+
 def run_grid(H_grid, nu_grid, K_atm, N, M):
     """Compute price grid over H × nu at fixed K."""
     grid = np.zeros((len(H_grid), len(nu_grid)))
@@ -97,8 +103,10 @@ def run_grid(H_grid, nu_grid, K_atm, N, M):
             count += 1
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
+                # Common random numbers: every cell reuses the same Gaussian draws, so
+                # cell-to-cell differences reflect (H, nu), not independent MC noise
                 grid[i, j] = price_asian_call(H=H, nu=nu, K=K_atm, T=T, S0=S0, r=R,
-                                              N=N, M=M, seed=100 * i + j)
+                                              N=N, M=M, seed=SEED)
             print(f"  [{count}/{total}] H={H:.2f}  nu={nu:.2f}  price={grid[i,j]:.3f}")
     return grid
 
@@ -112,7 +120,7 @@ def run_strike_sweep(H_grid, nu_fixed, K_grid, N, M):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 p = price_asian_call(H=H, nu=nu_fixed, K=K, T=T, S0=S0, r=R,
-                                     N=N, M=M, seed=200 + 10 * i + j)
+                                     N=N, M=M, seed=SEED)  # common random numbers
             prices.append(p)
         results[H] = np.array(prices)
     return results
@@ -141,7 +149,7 @@ def plot_surface(H_grid, nu_grid, price_grid, out_path, M):
                 linewidths=0.4, linecolor="white")
     ax.set_xlabel(r"Vol-of-vol  $\nu$")
     ax.set_ylabel("Hurst exponent  H")
-    ax.set_title("ATM price vs (H, nu)\nlow H (rough) = higher price")
+    ax.set_title("ATM price vs (H, nu)\nlower H at fixed nu = higher price")
     # seaborn.heatmap places the first DataFrame row (H=0.05) at the TOP of the
     # y-axis, which reverses the natural ordering (H increases downward).
     # invert_yaxis() flips it so H increases upward, matching the line plot in

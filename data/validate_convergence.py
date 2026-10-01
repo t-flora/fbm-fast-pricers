@@ -14,7 +14,7 @@ Two panels:
   (b) Log-log: MC std-error vs M; fitted slope (should be approx -0.5)
 
 Output:
-    plots/convergence.png
+    plots/figures/convergence.png
 
 Usage:
     uv run python data/validate_convergence.py [--n-seeds 5] [--max-M 25000]
@@ -30,16 +30,16 @@ The Central Limit Theorem (CLT) guarantees that the Monte Carlo estimator
 has standard error  sigma_payoff / sqrt(M),  regardless of dimension.
 This "1/sqrt(M)" rate is the fundamental MC convergence law.
 
-Why is sigma_payoff so large (~35)?
+Why is sigma_payoff so large (~60)?
   Our RFSV model uses sigma_0 = exp(nu * W_0^H) = 1.0 (100% annualised vol).
   At 100% vol the stock path swings wildly, producing hugely variable payoffs.
   The mean still converges correctly — it just takes more paths to pin it down.
 
 Estimating sigma_payoff:
-  We don't know sigma_payoff analytically, so we back it out from the largest-M
-  run using the CLT relation:
-    std(seed_prices at M_max) = sigma_payoff / sqrt(M_max)
-  => sigma_payoff_hat = std(seed_prices) * sqrt(M_max)
+  We don't know sigma_payoff analytically, so we estimate it as the sample std
+  of the M_max individual per-path payoffs of one run.  (Backing it out from
+  the spread of n_seeds seed-level prices instead is far noisier: a std from
+  5 samples has ~35% relative error, which once gave sigma ~ 35 instead of ~61.)
   This is then used to draw the theoretical confidence bands in panel (a).
 
 Panel (b): why the fitted slope may differ from -0.5:
@@ -63,7 +63,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import linregress
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from data.rfsv_model import price_asian_call
+from data.rfsv_model import price_asian_call, simulate_log_vol_paths, _simulate_price_paths
 
 
 # ── Parameters ────────────────────────────────────────────────────────────────
@@ -138,12 +138,14 @@ def main() -> None:
     mean_times  = np.array(mean_times)
     m_arr       = np.array(m_values, dtype=float)
 
-    # Estimate sigma_payoff from the largest-M run.
-    # CLT: std(seed_prices at M) = sigma_payoff / sqrt(M)
-    # => sigma_payoff = std(seed_prices) * sqrt(M)
-    # We use the largest M because it has the best-estimated std (most samples).
-    sigma_payoff = std_prices[-1] * np.sqrt(m_arr[-1])
-    print(f"\nEstimated sigma_payoff = {sigma_payoff:.4f}  (from M={m_values[-1]:,} run)")
+    # Estimate sigma_payoff directly from the M_max per-path payoffs of one run
+    # (same paths as price_asian_call with seeds[0]).
+    dt = T / N
+    log_vol = simulate_log_vol_paths(N, m_values[-1], H, NU, dt, seed=seeds[0])
+    paths = _simulate_price_paths(log_vol, S0, R, dt, seed=seeds[0] + 1)
+    payoffs = np.exp(-R * T) * np.maximum(paths.mean(axis=1) - K, 0.0)
+    sigma_payoff = float(np.std(payoffs, ddof=1))
+    print(f"\nEstimated sigma_payoff = {sigma_payoff:.4f}  (from {m_values[-1]:,} per-path payoffs)")
 
     # Log-log fit: log(std) = intercept + slope * log(M)
     # Under CLT, slope = -0.5 exactly.  Deviations are due to noisy std estimates
@@ -206,7 +208,7 @@ def main() -> None:
     os.makedirs(os.path.dirname(out), exist_ok=True)
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"\nSaved  {os.path.normpath(out)}")
-    plt.show()
+
 
 
 if __name__ == "__main__":

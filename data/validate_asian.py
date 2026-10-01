@@ -19,7 +19,7 @@ Usage:
     uv run python data/validate_asian.py [--M 5000] [--N 252]
 
 Output:
-    plots/validate_asian.png
+    plots/figures/validate_asian.png
 
 ──────────────────────────────────────────────────────────────────────────
 BEGINNER'S GUIDE
@@ -31,10 +31,15 @@ What is the Levy (1992) approximation?
   for the arithmetic Asian call under *constant* sigma (standard GBM), by
   matching the first two moments of the arithmetic average to a lognormal
   distribution.  This gives a closed-form price in terms of Black-Scholes
-  inputs.  It is not exact but is accurate to < 1% for typical parameters.
+  inputs.  It is accurate to < 1% at typical equity vols (sigma ~ 0.2), but
+  NOT at the sigma_0 = 1.0 (100% vol) used here: at K = 100 it gives 23.72
+  versus 22.29 +/- 0.12 for exact discrete GBM by MC (200k paths), i.e. it
+  overprices by ~6%.  Treat the Levy curve as an approximate reference only;
+  a nu = 0 MC run is the correct GBM baseline.
 
   We use it as a benchmark because:
-  (1) At nu = 0, RFSV reduces to constant-sigma GBM, so RFSV should match Levy.
+  (1) At nu = 0, RFSV reduces to constant-sigma GBM (sigma = 1), which Levy
+      approximates.
   (2) Levy is fast (no MC noise), giving a clean baseline.
 
 Why do RFSV prices exceed Levy (even at H=0.5)?
@@ -42,13 +47,16 @@ Why do RFSV prices exceed Levy (even at H=0.5)?
   The RFSV model has sigma_t = exp(nu * W_t^H), which is stochastic.
   By Jensen's inequality, E[sigma^2] > E[sigma]^2 for any random sigma.
   This "volatility convexity" makes options more expensive than under constant
-  sigma.  The effect is larger for larger nu and larger H (smoother => slower
-  mean reversion back to sigma_0, so sigma_t wanders further from 1.0).
+  sigma.  The effect grows with Var(log sigma_t) = nu^2 t^{2H}.  Note that for
+  t < 1 year, t^{2H} is LARGER for small H, so lowering H at fixed nu also
+  raises the total variance of log-vol, not just its roughness.
 
 What is the roughness premium?
 
-  RFSV(H=0.1) - RFSV(H=0.5) measures the additional price attributable
-  purely to roughness, holding nu fixed.  Rougher vol (H=0.1) produces sharper,
+  RFSV(H=0.1) - RFSV(H=0.5) at fixed nu.  This is NOT a pure roughness
+  effect: because Var(nu W_t^H) = nu^2 t^{2H}, the two models also differ in
+  how much log-vol varies on [0, T].  Matching integrated variance across H
+  (rescaling nu) would be needed to isolate roughness.  Rougher vol (H=0.1) produces sharper,
   shorter-lived volatility spikes.  For Asian options (which average over time),
   these spikes partially cancel in the payoff, but their presence still raises
   option prices near ATM where the payoff is most sensitive to vol fluctuations.
@@ -84,7 +92,7 @@ T  = 1.0
 R  = 0.0
 NU = 0.30    # vol-of-vol (calibrated)
 
-# Strikes: OTM puts through ITM calls
+# Strikes: deep ITM calls (K=70) through OTM calls (K=130)
 STRIKES = np.array([70, 80, 90, 95, 100, 105, 110, 120, 130], dtype=float)
 
 # H values to sweep

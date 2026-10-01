@@ -99,7 +99,7 @@ def price_asian_call(H: float, nu: float, K: float, T: float = 1.0,
 def price_european_call(H: float, nu: float, K: float, T: float = 1.0,
                         S0: float = 100.0, r: float = 0.0,
                         N: int = 252, M: int = 10000, seed: int = 42,
-                        mu0: float = 0.0) -> float:
+                        mu0: float = 0.0, martingale_correct: bool = False) -> float:
     """
     Price European call under RFSV model via Monte Carlo.
 
@@ -107,11 +107,17 @@ def price_european_call(H: float, nu: float, K: float, T: float = 1.0,
          log σ_t = mu0 + nu * W_t^H.
          Default mu0=0 → σ_0 = 1.0 (matches C++ params.hpp).
          Set mu0 = log(target_vol) to calibrate to market vol level.
+    martingale_correct: rescale S_T so its sample mean equals the forward
+         S0 * exp(rT) exactly (moment matching).  With common random numbers
+         across strikes, a sampling error in mean(S_T) acts like a shifted
+         forward and tilts the whole implied-vol curve; this removes it.
     """
     dt = T / N
     log_vol = simulate_log_vol_paths(N, M, H, nu, dt, seed=seed) + mu0
     prices = _simulate_price_paths(log_vol, S0, r, dt, seed=seed + 1)
     S_T = prices[:, -1]                             # terminal price only
+    if martingale_correct:
+        S_T = S_T * (S0 * np.exp(r * T) / S_T.mean())
     payoff = np.maximum(S_T - K, 0.0)
     return float(np.exp(-r * T) * np.mean(payoff))
 

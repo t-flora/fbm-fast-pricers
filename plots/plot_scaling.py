@@ -30,7 +30,7 @@ METHOD_STYLE = {
 }
 
 THEORY_EXP = {
-    "cholesky": 3.0,
+    "cholesky": 2.0,   # O(M N^2) MC loop dominates the O(N^3) factorization at M = 10k
     "fft":      1.0,
     "rsvd":     1.0,
 }
@@ -95,9 +95,8 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
     bars = ax2.bar(x, alphas, color=colors, alpha=0.85, edgecolor="black", linewidth=0.8)
     for xi, (th, r2) in enumerate(zip(theory, r2s)):
         if th is not None:
-            ax2.axhline(th, xmin=(xi - 0.4) / len(methods),
-                        xmax=(xi + 0.4) / len(methods),
-                        color="black", linestyle=":", linewidth=1.5, alpha=0.7)
+            ax2.hlines(th, xi - 0.4, xi + 0.4,
+                       color="black", linestyle=":", linewidth=1.5, alpha=0.7)
         ax2.text(xi, alphas[xi] + 0.05, f"$R^2$={r2:.3f}", ha="center", fontsize=9,
                  bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85, edgecolor="none"))
 
@@ -108,7 +107,7 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
         "Fitted complexity exponents\n"
         r"(dotted = theoretical; note: Cholesky dominated by $O(M \cdot N^2)$ per-path cost)"
     )
-    ax2.set_ylim(0, max(alphas) * 1.35)
+    ax2.set_ylim(0, max(alphas + [t for t in theory if t is not None]) * 1.2)
 
     for bar, m in zip(bars, methods):
         c = fit_results[m][0]
@@ -257,7 +256,7 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
       (a) theoretical peak bytes vs N (log-log) — Cholesky O(N^2), FFT O(N), rSVD variants
       (b) estimated memory bandwidth utilization for Cholesky (GB/s vs rated 100 GB/s)
     """
-    L3_MB = 16.0
+    L3_MB = 16.0  # Apple M2 P-cluster L2, the largest on-chip cache (M2 has no L3)
     BANDWIDTH_GBS = 100.0
 
     # Only rows with memory columns
@@ -286,7 +285,7 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
     fig, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
     fig.text(
         0.5, 1.01,
-        f"Memory analysis  (M={M_paths:,} paths, L3={L3_MB:.0f} MB, M2 rated BW={BANDWIDTH_GBS:.0f} GB/s)",
+        f"Memory analysis  (M={M_paths:,} paths, largest cache={L3_MB:.0f} MB M2 L2, rated DRAM BW={BANDWIDTH_GBS:.0f} GB/s)",
         ha="center", fontsize=10, style="italic",
     )
 
@@ -308,7 +307,7 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
 
     # L3 threshold line
     ax.axhline(L3_MB, color="#e74c3c", linestyle="--", linewidth=1.2,
-               alpha=0.7, label=f"L3 cache ({L3_MB:.0f} MB)")
+               alpha=0.7, label=f"M2 L2 cache ({L3_MB:.0f} MB)")
 
     # O(N) and O(N^2) guide lines
     ax.loglog(N_range, 8e-6 * N_range, "lightgray", linewidth=1, linestyle="--")
@@ -316,7 +315,7 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
 
     ax.set_xlabel("Path resolution N")
     ax.set_ylabel("Theoretical peak memory (MB)")
-    ax.set_title("Peak memory vs $N$\n(dashed = L3 threshold; Cholesky/rSVD cross at $N \\approx 1500$)")
+    ax.set_title("Peak memory vs $N$\n(dashed = 16 MB cache; Cholesky and rSVD-held cross it at $N \\approx 1450$)")
     ax.legend(fontsize=8)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
 
@@ -335,10 +334,10 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
                      bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85, edgecolor="none"))
         ax2.set_xticks(range(len(Ns)))
         ax2.set_xticklabels([f"N={n}" for n in Ns])
-        ax2.set_ylabel("Estimated bandwidth (GB/s)")
+        ax2.set_ylabel("Effective streaming rate of L (GB/s)")
         ax2.set_title(
-            "Cholesky memory-bandwidth utilization\n"
-            "(bytes_accessed = N^2 * 8 * M  / wall_time_s)"
+            "Cholesky: effective rate of streaming $L$ (not measured DRAM traffic)\n"
+            r"($4N(N{+}1) M$ bytes / wall time; $L$ fits in cache for $N \leq 1000$)"
         )
         ax2.legend(fontsize=9)
         ax2.set_ylim(0, BANDWIDTH_GBS * 1.15)

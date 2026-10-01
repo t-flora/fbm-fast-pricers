@@ -1,10 +1,10 @@
 """
 Numerical stability analysis — three sub-questions.
 
-Panel (a) FFT eigenvalue clipping near H = 0.5
+Panel (a) FFT circulant-embedding eigenvalues vs H
   - Sweep H in {0.05, 0.10, ..., 0.501}
-  - Report: min(lambda), fraction clipped to 0, relative energy lost
-  - At H = 0.5 with nu -> 0, RFSV should reduce to GBM
+  - Report: min(lambda), fraction negative (would need clipping), relative energy lost
+  - Verifies the embedding is PSD, i.e. the FFT sampler is exact on the grid
 
 Panel (b) rSVD condition number vs rank
   - kappa(L_k) = max(sqrt(S)) / min(sqrt(S)) for rank k in {2..128}
@@ -19,7 +19,7 @@ Usage:
     uv run python data/validate_stability.py [--N 252] [--rank-max 128]
 
 Output:
-    plots/stability_report.png
+    plots/figures/stability_report.png
 
 ──────────────────────────────────────────────────────────────────────────
 BEGINNER'S GUIDE
@@ -32,19 +32,22 @@ Panel (a) — FFT eigenvalue clipping
   row.  When all eigenvalues are non-negative, we can use IFFT to sample exact
   fBM paths in O(N log N) — the Davies-Harte / Wood-Chan method.
 
-  Wood & Chan (1994) proved that for the *continuous* fGn kernel all
-  eigenvalues are non-negative for H in (0, 1).  However, on a *finite* grid
-  of N points the numerical eigenvalues can be slightly negative, especially
-  for rough H << 0.5.  Our FFT pricer clips them with max(lambda, 0), which
-  introduces a small bias.
+  If any eigenvalue were negative it would have to be clipped to zero, and the
+  sampled increments would no longer have exactly the fGn covariance.
 
-  Key result: at H = 0.1, N = 252 we find ~28% of eigenvalues negative and
-  ~15% of total spectral energy clipped.  Despite this, the price error vs
-  the Cholesky (exact) method is small (~0.3%) because the clipped energy is
-  spread over many small eigenvalues that contribute little to the path.
+  Key result: for every H tested (0.05 to 0.501) and every N, all 2N
+  eigenvalues are strictly positive, so no clipping happens and the FFT
+  sampler is exact on the grid.  The margin is thin for rough H, though:
+  at H = 0.1 the smallest eigenvalue is 0.24% of gamma(0) at N = 252 and
+  0.08% at N = 1000, shrinking like N^{-(1-2H)} because the fGn spectral
+  density vanishes at frequency zero for H < 1/2.  For
+  H <= 0.5 the fGn autocovariance is non-positive at every nonzero lag, the
+  case covered by Craigmile (2003).  The C++ pricer asserts this at runtime
+  (fft.hpp throws if any eigenvalue < -1e-8).
 
-  Contested point: calling the FFT method "exact" is a simplification.  It is
-  exact in the large-N limit but approximate at finite N for small H.
+  Pitfall: gamma(0) must equal dt^{2H}.  Dropping the |k-1|^{2H} term at k = 0
+  halves gamma(0) and spuriously produces ~28% negative eigenvalues at H = 0.1
+  (an earlier version of this script had exactly that bug).
 
 Panel (b) — rSVD condition number
 
@@ -70,8 +73,8 @@ Panel (c) — Cholesky covariance conditioning
   strictly positive.  As N grows, lambda_min shrinks (more correlated time steps
   → near-singular matrix), and kappa grows as N^alpha.
 
-  At N = 252, kappa ~ 789.  At N = 1000, kappa ~ 10^4.  While still safe for
-  Cholesky (lambda_min >> machine epsilon), this explains why the approximation
+  At N = 252, kappa ~ 789.  At N = 1000, kappa ~ 4e3 (fit: kappa ~ 1.08 N^1.19),
+  so float64 Cholesky stays safe until N ~ 1e12.  The growth still explains why the approximation
   quality of the rank-k rSVD degrades: the spectrum spans many decades, so
   truncating at rank k discards non-negligible low-frequency structure.
 """
@@ -108,7 +111,8 @@ def fgn_cov_row(N: int, H: float, dt: float) -> np.ndarray:
     """First row of the Toeplitz fGn covariance matrix."""
     k = np.arange(N, dtype=float)
     h2 = 2.0 * H
-    km1 = np.where(k == 0, 0.0, np.abs(k - 1) ** h2)
+    # |k-1|^{2H} is 1 at k = 0 (not 0), giving gamma(0) = dt^{2H} = Var of one increment
+    km1 = np.abs(k - 1) ** h2
     return 0.5 * dt ** h2 * (np.abs(k + 1) ** h2 + km1 - 2.0 * k ** h2)
 
 
@@ -135,7 +139,7 @@ def circulant_eigenvalues(N: int, H: float, dt: float) -> np.ndarray:
 def rsvd(A: np.ndarray, k: int, p: int = 5, q: int = 2,
          seed: int = 42) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Halko-Martinsson-Tropp Algorithm 4.4.
+    Halko-Martinsson-Tropp Algorithm 4.4 (randomized subspace iteration).
 
     Returns U (m x k), S (k,) such that A ≈ U * diag(S) * U^T for symmetric A.
     The third return value is None (Vt not needed here; symmetric => Vt = U^T).
@@ -144,7 +148,9 @@ def rsvd(A: np.ndarray, k: int, p: int = 5, q: int = 2,
       Stage A: random sketch Y = A @ Omega captures the k dominant column directions.
       Power iterations Y = (A A^T)^q @ Y amplify the signal-to-noise ratio by
       raising singular values to the power 2q+1, separating large from small.
-      QR on Y gives an orthonormal basis Q for the range of (A A^T)^q A.
+      Re-orthonormalizing after every product keeps the small directions from
+      being lost to round-off (sigma_1/sigma_k raised to 2q+1 can reach 1e15).
+      Q is an orthonormal basis for the range of (A A^T)^q A.
       Stage B: project A onto Q to get a small (k+p) x n matrix B.
       SVD of B is cheap (O((k+p)^2 * n)); rotate back via Q to get U.
     """
@@ -152,85 +158,42 @@ def rsvd(A: np.ndarray, k: int, p: int = 5, q: int = 2,
     _m, n  = A.shape
     l     = k + p  # oversampled rank (p=5 reduces failure probability to near zero)
     Omega = rng.standard_normal((n, l))
-    Y     = A @ Omega  # sketch: N x l  (captures top-l column directions)
+    Q, _  = np.linalg.qr(A @ Omega)  # sketch: N x l  (captures top-l column directions)
     for _ in range(q):
-        # Power iteration: replace A with (A A^T)^q A
-        # Singular values of iterated matrix: sigma_i^{2q+1} — amplifies gaps
-        Y = A @ (A.T @ Y)
-    Q, _ = np.linalg.qr(Y)  # orthonormal basis for range of (A A^T)^q A
-    Q    = Q[:, :l]
+        # Power iteration with QR after each product: range of (A A^T)^q A
+        W, _ = np.linalg.qr(A.T @ Q)
+        Q, _ = np.linalg.qr(A @ W)
     B    = Q.T @ A            # project: cheap (k+p) x n matrix
     U_b, S, _ = np.linalg.svd(B, full_matrices=False)
     U    = Q @ U_b            # rotate U back into the original N-dimensional space
     return U[:, :k], S[:k], None
 
 
-# ── Panel (a): FFT eigenvalue clipping ───────────────────────────────────────
+# ── Panel (a): FFT circulant eigenvalues ─────────────────────────────────────
 
 def panel_fft_clipping(ax, N: int = 252):
     H_values = [0.05, 0.10, 0.20, 0.30, 0.40, 0.45, 0.49, 0.499, 0.50, 0.501]
-    dt = T / N
 
-    H_arr, min_lam, frac_clipped, energy_lost = [], [], [], []
-    for H in H_values:
-        lam = circulant_eigenvalues(N, H, dt)
-        min_lam.append(lam.min())
-        clipped = lam < 0
-        frac_clipped.append(clipped.mean())
-        total_energy = lam.sum()
-        lost = (-lam[clipped]).sum() if clipped.any() else 0.0
-        energy_lost.append(lost / max(total_energy, 1e-12))
-        H_arr.append(H)
+    # min(lambda) scales like dt^{2H}, so normalize by gamma(0) = mean(lambda)
+    # to compare across H.  Two grids show how the margin shrinks with N.
+    for n, style in [(N, "o-"), (4 * N, "s--")]:
+        rel_min, n_neg = [], 0
+        for H in H_values:
+            lam = circulant_eigenvalues(n, H, T / n)
+            rel_min.append(lam.min() / lam.mean())
+            n_neg += int((lam < 0).sum())
+        ax.semilogy(H_values, np.maximum(rel_min, 1e-16), style, linewidth=2,
+                    markersize=6, label=f"N={n}  ({n_neg} negative eigenvalues)")
 
-    H_arr      = np.array(H_arr)
-    min_lam    = np.array(min_lam)
-    frac_clip  = np.array(frac_clipped)
-    energy_arr = np.array(energy_lost)
-
-    # Primary: min eigenvalue (log scale of |value|, signed)
-    pos_mask = min_lam >= 0
-    neg_mask = ~pos_mask
-
-    ax.axhline(0, color="black", linewidth=0.8, zorder=0)
     ax.axvline(0.5, color="#e74c3c", linestyle="--", linewidth=1.2,
-               alpha=0.7, label="H = 0.5 boundary")
-    ax.plot(H_arr[pos_mask], min_lam[pos_mask],
-            "o-", color="#2980b9", linewidth=2, markersize=7,
-            label=r"$\min(\lambda) \geq 0$")
-    if neg_mask.any():
-        ax.plot(H_arr[neg_mask], min_lam[neg_mask],
-                "s--", color="#e74c3c", linewidth=2, markersize=7,
-                label=r"$\min(\lambda) < 0$ (clipped)")
-
+               alpha=0.7, label="H = 0.5 (white noise)")
     ax.set_xlabel("Hurst exponent H")
-    ax.set_ylabel("Minimum circulant eigenvalue")
+    ax.set_ylabel(r"$\min(\lambda) \,/\, \gamma(0)$")
     ax.set_title(
-        f"FFT: min eigenvalue vs H  (N={N})\n"
-        r"Negative $\rightarrow$ must clip to 0 $\rightarrow$ simulation inexact"
+        "FFT: smallest circulant eigenvalue vs H\n"
+        r"all $\lambda > 0$ $\rightarrow$ no clipping $\rightarrow$ exact fGn sampling"
     )
     ax.legend(fontsize=8)
-
-    # Secondary y-axis: fraction clipped
-    ax2 = ax.twinx()
-    ax2.fill_between(H_arr, 0, frac_clip * 100, alpha=0.15,
-                     color="#e67e22", label="% eigenvalues clipped")
-    ax2.plot(H_arr, frac_clip * 100, "^-", color="#e67e22",
-             linewidth=1.5, markersize=5, alpha=0.8)
-    ax2.set_ylabel("Eigenvalues clipped (%)", color="#e67e22")
-    ax2.tick_params(axis="y", labelcolor="#e67e22")
-    ax2.set_ylim(0, max(frac_clip.max() * 120, 5))
-
-    # Annotate energy lost at H=0.501 if nonzero
-    if neg_mask.any():
-        worst_idx = np.argmin(min_lam)
-        ax.annotate(
-            f"energy lost: {energy_arr[worst_idx]*100:.2f}%",
-            xy=(H_arr[worst_idx], min_lam[worst_idx]),
-            xytext=(H_arr[worst_idx] - 0.12, min_lam[worst_idx] - 0.001),
-            fontsize=8,
-            arrowprops=dict(arrowstyle="->", color="gray"),
-            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, edgecolor="lightgray"),
-        )
 
 
 # ── Panel (b): rSVD condition number vs rank ──────────────────────────────────
@@ -262,7 +225,7 @@ def panel_rsvd_conditioning(ax, N: int = 252):
     ax.tick_params(axis="y", labelcolor=color_k)
     ax.set_title(
         f"rSVD: condition number vs rank  (N={N}, H={H_DEFAULT})\n"
-        r"Large $\kappa$ $\rightarrow$ near-singular factor $\rightarrow$ noisy paths"
+        r"$\kappa(L_k) < 40$ for all $k$ $\rightarrow$ well-conditioned factor"
     )
 
     ax2 = ax.twinx()
@@ -277,7 +240,8 @@ def panel_rsvd_conditioning(ax, N: int = 252):
     ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc="upper right")
 
     # Annotate the MC noise floor
-    ax2.axhline(100 * 0.4 / 23.58, color="#27ae60", linestyle=":",
+    ax2.axhline(100 * (61.0 / np.sqrt(10_000)) / 23.58,  # sigma_V / sqrt(M) at M = 10k, as % of price
+                color="#27ae60", linestyle=":",
                 linewidth=1, alpha=0.6, label="MC noise floor")
 
 
@@ -319,7 +283,7 @@ def panel_cholesky_conditioning(ax):
     ax.set_ylabel("Condition number κ(C)")
     ax.set_title(
         f"Cholesky: κ(C) vs N  (H={H_DEFAULT})\n"
-        "shows ill-conditioning growth; eventual risk of non-PD failure"
+        "polynomial growth, far below the float64 limit"
     )
     ax.legend(fontsize=9)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())

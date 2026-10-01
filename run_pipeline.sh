@@ -42,7 +42,7 @@ if [ "$FAST" -eq 1 ]; then
     echo "Mode: FAST (reduced M for smoke-test)"
 else
     M_ASIAN=10000; N_ASIAN=252
-    M_IV=3000;     N_IV=63
+    M_IV=20000;    N_IV=63
     M_SENS=10000;  N_SENS=252
     CONV_SEEDS=5;  CONV_MAX_M=25000
     STRUCT_SMALL=64; STRUCT_LARGE=128

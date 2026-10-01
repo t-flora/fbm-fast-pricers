@@ -16,10 +16,10 @@ SPY is used here as the most liquid proxy; dividend effects are small on
 short-dated options and are ignored in this pedagogical comparison.
 
 Usage:
-    uv run python data/validate_iv.py [--M 3000] [--N 63]
+    uv run python data/validate_iv.py [--M 20000] [--N 63]
 
 Output:
-    plots/validate_iv.png
+    plots/figures/validate_iv.png
 
 ──────────────────────────────────────────────────────────────────────────
 BEGINNER'S GUIDE
@@ -42,9 +42,15 @@ What is the IV smile?
   OTM puts have higher IV than ATM calls.  This "smile" or "skew" is evidence
   that returns have fatter tails and negative skew compared to lognormal.
 
-  RFSV generates a characteristic steep ATM skew with slope proportional to
-  T^{H - 0.5} as T -> 0.  For H=0.1, the slope diverges as T -> 0 much faster
-  than classical stochastic vol models (Heston: slope ~ T^0.5).
+  With a negative spot-vol correlation rho, rough-vol models generate an ATM
+  skew proportional to T^{H - 0.5} as T -> 0, which explodes for H = 0.1
+  (classical Heston-type models give a skew that stays bounded as T -> 0).
+
+  Limitation: this engine uses rho = 0 (the price shocks Z are independent of
+  the fBM).  With rho = 0 the model smile is symmetric in log-moneyness, so it
+  can reproduce smile *curvature* but not SPY's downward *skew*.  Also note
+  SPY options are American-style; for calls on a low-dividend ETF the early
+  exercise premium is small, so we treat them as European.
 
 Why do we calibrate mu0?
 
@@ -186,7 +192,8 @@ def calibrate_mu0(calls_df: pd.DataFrame, spot: float, H: float, nu: float,
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             p = price_european_call(H=H, nu=nu, K=K_atm, T=T_atm, S0=spot, r=R,
-                                    N=N, M=M, seed=42, mu0=mu0)
+                                    N=N, M=M, seed=42, mu0=mu0,
+                                    martingale_correct=True)
         return p - target_price
 
     try:
@@ -212,8 +219,11 @@ def compute_rfsv_ivs(calls_df: pd.DataFrame, spot: float,
         N = max(int(round(N_per_year * T)), 5)   # at least 5 steps
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
+            # Common random numbers (same seed as calibrate_mu0) across strikes:
+            # the smile shape is not distorted by independent MC noise per strike
             p = price_european_call(H=H, nu=nu, K=K, T=T, S0=spot, r=R,
-                                    N=N, M=M, seed=42 + i, mu0=mu0)
+                                    N=N, M=M, seed=42, mu0=mu0,
+                                    martingale_correct=True)
         iv = bs_implied_vol(p, spot, K, T, R)
         rfsv_ivs.append(iv)
         if (i + 1) % 5 == 0:
@@ -222,6 +232,9 @@ def compute_rfsv_ivs(calls_df: pd.DataFrame, spot: float,
     calls_df = calls_df.copy()
     calls_df["rfsv_iv"] = rfsv_ivs
     return calls_df
+
+
+Y_CAP_PCT = 40.0   # upper y-limit (%) for the smile plots
 
 
 def plot_iv_smiles(dfs: list, spot: float, out_path: str, mu0s: dict = None):  # type: ignore[assignment]
@@ -267,15 +280,24 @@ def plot_iv_smiles(dfs: list, spot: float, out_path: str, mu0s: dict = None):  #
             f"RFSV scaled to  $\\sigma_{{\\mathrm{{eff}}}}$={sigma_eff:.3f}"
         )
 
-        # x-axis: round moneyness ticks
-        ax.set_xticks([0.80, 0.90, 1.00, 1.10, 1.20])
+        # x-axis: round moneyness ticks spanning the data
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=6, steps=[1, 2, 5, 10]))
 
         # y-axis: integer % gridlines at 10, 15, 20, 25
         iv_vals = pd.concat([df["market_iv"].dropna(), df["rfsv_iv"].dropna()]) * 100
         if not iv_vals.empty:
             y_lo = max(iv_vals.min() * 0.90, 5.0)
-            y_hi = iv_vals.max() * 1.10
+            # Cap the axis so the near-ATM comparison stays readable.  Deep-ITM call
+            # IVs can be huge here: with r = 0 and no dividends, the carry in an ITM
+            # call price is misread as time value.  Off-scale points are counted.
+            y_hi = min(iv_vals.max() * 1.10, Y_CAP_PCT)
             ax.set_ylim(y_lo, y_hi)
+            n_off = int((df["market_iv"] * 100 > y_hi).sum())
+            if n_off:
+                ax.text(0.02, 0.97, f"{n_off} deep-ITM market IVs above {y_hi:.0f}% (off scale)",
+                        transform=ax.transAxes, fontsize=8, va="top",
+                        bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                                  alpha=0.85, edgecolor="lightgray"))
         ax.yaxis.set_major_locator(mticker.MultipleLocator(5))
         ax.yaxis.set_minor_locator(mticker.MultipleLocator(1))
         ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%d%%"))
@@ -295,8 +317,8 @@ def plot_iv_smiles(dfs: list, spot: float, out_path: str, mu0s: dict = None):  #
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--M", type=int, default=3000,
-                        help="Monte Carlo paths per option (default: 3000)")
+    parser.add_argument("--M", type=int, default=20000,
+                        help="Monte Carlo paths per option (default: 20000)")
     parser.add_argument("--N", type=int, default=63,
                         help="Time steps per year (default: 63 = quarterly)")
     parser.add_argument("--expirations", type=int, default=2,
