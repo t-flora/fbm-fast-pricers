@@ -3,12 +3,12 @@
 // "Exact" methods: Cholesky and FFT both produce exact fBM samples.
 // "Approximate" method: low-rank rSVD — truncation error controlled by rank k.
 //
-// Memory metrics (macOS mach API):
-//   peak_rss_mb       — RSS growth across the call (RSS after minus RSS before). NOT a true
-//                       peak: buffers are freed on return, so this only reflects pages the
-//                       allocator kept resident (it can read 0). Prefer theoretical_peak_mb.
+// Memory metrics:
+//   measured_peak_mb  — lifetime peak RSS of one call, measured by running it (with a few
+//                       paths; memory does not depend on M) in a forked child and reading
+//                       ru_maxrss via wait4, minus the peak of an idle child. POSIX.
 //   theoretical_peak_mb — size of the dominant matrix held during the MC loop:
-//                       Cholesky N^2*8 (L), FFT 2N*16, rsvd N^2*8 (C held) or N*k*8 (C freed)
+//                       Cholesky N^2*8 (L), FFT 2N*40, rsvd N^2*8 (C held) or N*k*8 (C freed)
 //   cache_pressure    — theoretical_peak_mb / CACHE_MB  (>1 means it no longer fits on-chip)
 //   est_bandwidth_GBs — Cholesky only: (N(N+1)/2)*8*M bytes / total wall time. An effective streaming
 //                       rate for L, not measured DRAM traffic (L fits in cache for N <= 1000).
@@ -25,7 +25,9 @@
 #include <vector>
 #include <cmath>
 #include <Eigen/Dense>
-#include <mach/mach.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "cholesky/cholesky.hpp"
 #include "fft/fft.hpp"
@@ -39,19 +41,29 @@ static double elapsed_s(Clock::time_point t0) {
     return std::chrono::duration<double>(Clock::now() - t0).count();
 }
 
-// Current resident set size in bytes (macOS mach API).
-// Unlike getrusage ru_maxrss (cumulative peak), this reflects the current RSS
-// after heap allocations have been freed by RAII / leaving scope.
-static size_t current_rss_bytes() {
-    mach_task_basic_info info;
-    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
-                  reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS)
-        return 0;
-    return info.resident_size;
+// Peak RSS (MB) of a forked child that runs f() and exits.
+template <class F>
+static double child_maxrss_mb(F f) {
+    pid_t pid = fork();
+    if (pid == 0) { f(); _exit(0); }
+    int status = 0;
+    struct rusage ru {};
+    if (pid < 0 || wait4(pid, &status, 0, &ru) < 0) return 0.0;
+#ifdef __APPLE__
+    return ru.ru_maxrss / (1024.0 * 1024.0);  // macOS reports bytes
+#else
+    return ru.ru_maxrss / 1024.0;             // Linux reports kilobytes
+#endif
 }
 
-static double rss_mb() { return current_rss_bytes() / (1024.0 * 1024.0); }
+// Lifetime peak memory of f() beyond what an idle child (same inherited state) uses.
+template <class F>
+static double measured_peak_mb(F f) {
+    double base = child_maxrss_mb([] {});
+    return child_maxrss_mb(f) - base;
+}
+
+static constexpr int M_MEMORY = 100;  // paths per memory probe
 
 // Largest on-chip cache on the test machine: Apple M2 performance-cluster L2 = 16 MB
 // (`sysctl hw.perflevel0.l2cachesize`). The M2 has no L3; the name is kept for the CSV.
@@ -67,7 +79,7 @@ int main() {
 
     std::ofstream csv_time("benchmarks/results/time_vs_N.csv");
     csv_time << "method,N,M_paths,wall_time_s,price,construction_time_s,mc_time_s,"
-                "peak_rss_mb,theoretical_peak_mb,cache_pressure,est_bandwidth_GBs\n";
+                "measured_peak_mb,theoretical_peak_mb,cache_pressure,est_bandwidth_GBs\n";
 
     std::ofstream csv_err("benchmarks/results/error_vs_rank.csv");
     csv_err << "rank_k,N,reference_price,rsvd_price,abs_price_error,"
@@ -78,9 +90,8 @@ int main() {
         std::cout << "\n── N = " << N << " (M=" << M_PATHS << " paths) ──\n";
 
         // Cholesky: C is factored in place, so one N x N matrix (N^2 doubles) holds L
-        double rss_before = rss_mb();
         auto rc = cholesky::price_timed(N, M_PATHS);
-        double rss_chol = rss_mb();
+        double peak_chol = measured_peak_mb([N] { cholesky::price_timed(N, M_MEMORY); });
         double t_chol = rc.t_construct + rc.t_mc;
         double theory_chol_mb = static_cast<double>(N) * N * 8.0 / (1024.0 * 1024.0);
         double cache_chol = theory_chol_mb / L3_MB;
@@ -90,47 +101,45 @@ int main() {
 
         csv_time << "cholesky," << N << "," << M_PATHS << "," << t_chol << "," << rc.price
                  << "," << rc.t_construct << "," << rc.t_mc << ","
-                 << (rss_chol - rss_before) << "," << theory_chol_mb << ","
+                 << peak_chol << "," << theory_chol_mb << ","
                  << cache_chol << "," << bw_chol << "\n";
         std::cout << "  cholesky : price=" << rc.price << "  time=" << t_chol
                   << "s  theory=" << theory_chol_mb << " MB"
                   << "  bw_est=" << bw_chol << " GB/s\n";
 
-        // FFT: peak = circulant row c_emb (2N doubles) + work arrays ~ O(N)
-        rss_before = rss_mb();
+        // FFT: during MC the sampler holds the 2N scale factors (doubles) and two 2N complex
+        // buffers for the inverse FFT: 2N * (8 + 16 + 16) bytes
         auto rf = fft_pricer::price_timed(N, M_PATHS);
-        double rss_fft = rss_mb();
+        double peak_fft = measured_peak_mb([N] { fft_pricer::price_timed(N, M_MEMORY); });
         double t_fft = rf.t_construct + rf.t_mc;
-        double theory_fft_mb = static_cast<double>(N) * 2 * 16.0 / (1024.0 * 1024.0);
+        double theory_fft_mb = static_cast<double>(N) * 2 * 40.0 / (1024.0 * 1024.0);
         double cache_fft = theory_fft_mb / L3_MB;
 
         csv_time << "fft," << N << "," << M_PATHS << "," << t_fft << "," << rf.price
                  << "," << rf.t_construct << "," << rf.t_mc << ","
-                 << (rss_fft - rss_before) << "," << theory_fft_mb << ","
+                 << peak_fft << "," << theory_fft_mb << ","
                  << cache_fft << ",\n";
         std::cout << "  fft      : price=" << rf.price << "  time=" << t_fft
                   << "s  theory=" << theory_fft_mb << " MB\n";
 
         // rSVD (C held): peak = N x N covariance matrix (O(N^2)) + Lk (N x k)
         constexpr int RANK_K = 32;
-        rss_before = rss_mb();
         auto rh = lowrank::price_timed(N, M_PATHS, RANK_K);
-        double rss_hmat = rss_mb();
+        double peak_hmat = measured_peak_mb([N] { lowrank::price_timed(N, M_MEMORY, RANK_K); });
         double t_hmat = rh.t_construct + rh.t_mc;
         double theory_hmat_mb = static_cast<double>(N) * N * 8.0 / (1024.0 * 1024.0);
         double cache_hmat = theory_hmat_mb / L3_MB;
 
         csv_time << "rsvd," << N << "," << M_PATHS << "," << t_hmat << "," << rh.price
                  << "," << rh.t_construct << "," << rh.t_mc << ","
-                 << (rss_hmat - rss_before) << "," << theory_hmat_mb << ","
+                 << peak_hmat << "," << theory_hmat_mb << ","
                  << cache_hmat << ",\n";
         std::cout << "  rsvd     : price=" << rh.price << "  time=" << t_hmat
                   << "s  theory=" << theory_hmat_mb << " MB\n";
 
         // rSVD (C freed before MC): peak during MC = Lk only (N x k)
-        rss_before = rss_mb();
         auto rhf = lowrank::price_freed_timed(N, M_PATHS, RANK_K);
-        double rss_hmat_f = rss_mb();
+        double peak_hmat_f = measured_peak_mb([N] { lowrank::price_freed_timed(N, M_MEMORY, RANK_K); });
         double t_hmat_f = rhf.t_construct + rhf.t_mc;
         // After C freed: only Lk (N * k doubles) remains
         double theory_freed_mb = static_cast<double>(N) * RANK_K * 8.0 / (1024.0 * 1024.0);
@@ -138,7 +147,7 @@ int main() {
 
         csv_time << "rsvd_freed," << N << "," << M_PATHS << "," << t_hmat_f << ","
                  << rhf.price << "," << rhf.t_construct << "," << rhf.t_mc << ","
-                 << (rss_hmat_f - rss_before) << "," << theory_freed_mb << ","
+                 << peak_hmat_f << "," << theory_freed_mb << ","
                  << cache_freed << ",\n";
         std::cout << "  rsvd_free: price=" << rhf.price << "  time=" << t_hmat_f
                   << "s  theory_mc=" << theory_freed_mb << " MB\n";
