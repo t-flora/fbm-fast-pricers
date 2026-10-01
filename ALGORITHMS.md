@@ -63,25 +63,30 @@ Eigen::MatrixXd C = build_fbm_cov_matrix(N, H, T);
 This fills the $N \times N$ matrix with $C[i,j] = \frac{1}{2}(t_i^{2H} + t_j^{2H} - |t_i - t_j|^{2H})$
 where $t_i = i \cdot dt$. Cost: $O(N^2)$.
 
-**Cholesky factorization** (`cholesky.hpp:21-23`):
+**Cholesky factorization**:
 ```cpp
-Eigen::LLT<Eigen::MatrixXd> llt(C);
+Eigen::LLT<Eigen::Ref<Eigen::MatrixXd>> llt(C);
 if (llt.info() != Eigen::Success)
     throw std::runtime_error("Cholesky: matrix not positive-definite");
-Eigen::MatrixXd L = llt.matrixL();
+auto L = C.triangularView<Eigen::Lower>();
 ```
-`Eigen::LLT` computes the lower-triangular factor `L` such that $C = L L^\top$.
-Cost: $O(N^3)$. Done **once** before the Monte Carlo loop.
+`Eigen::LLT` computes the lower-triangular factor `L` such that $C = L L^\top$. Because it
+wraps an `Eigen::Ref` to `C`, it factors **in place**: `L` overwrites the lower triangle of `C`,
+and `L` is just a triangular *view* of that storage, not a copy.
+Cost: $N^3/3$ flops. Done **once** before the Monte Carlo loop.
 
-**Per-path sampling** (`cholesky.hpp:30-33`):
+**Per-path sampling**:
 ```cpp
 for (int i = 0; i < N; ++i) z(i) = norm(rng);
-Eigen::VectorXd lv = nu * (L * z);
+lv.noalias() = L * z;   // triangular mat-vec
+lv *= nu;
 ```
-`L * z` is an $N \times N$ lower-triangular matrix times an $N$-vector: cost $O(N^2)$ per path.
+`L * z` is a lower-triangular matrix times an $N$-vector: $N^2$ flops per path, reading only the
+lower half of the matrix. (Eigen will not scale a triangular product by a scalar inside one
+expression, hence the separate `lv *= nu`.)
 `lv[i] = log σ_{t_i}` — the log-volatility path.
 
-**Price simulation** (`cholesky.hpp:34-35`):
+**Price simulation**:
 ```cpp
 auto inno = randn(N, rng);
 payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt), K);
@@ -93,21 +98,25 @@ the vol process). `log_vol_to_prices` steps $S_i = S_{i-1} \cdot \exp\!\bigl((r 
 
 | Phase | Cost | $N=252$ | $N=1000$ |
 |-------|------|---------|----------|
-| Factorize $C$ | $O(N^3)$ | ~0.1ms | ~26ms |
-| MC loop ($M$ paths) | $O(MN^2)$ | ~200ms | ~1670ms |
+| Factorize $C$ | $O(N^3)$ | ~1.5ms | ~26ms |
+| MC loop ($M$ paths) | $O(MN^2)$ | ~180ms | ~1110ms |
 
 The factorization cost is dominated by the per-path cost at $M = 10{,}000$.
-The fitted exponent $\alpha \approx 1.54$ (from `benchmarks/results/time_vs_N.csv`)
+The fitted exponent $\alpha \approx 1.33$ (from `benchmarks/results/time_vs_N.csv`)
 reflects the $O(MN^2)$ regime, but the pure $O(N^2)$ per-path cost would predict $\alpha \approx 2$.
 The observed value is lower because each MC iteration also carries $O(N)$ overhead — $N$ Gaussian
 draws, $N$ exponentials to recover $\sigma$ from $\log\sigma$, and $N$ payoff steps — which
-dampens the effective exponent to 1.54 over the tested range $N \in \{252, 1000\}$.
-This is confirmed by the memory bandwidth calculation:
-$N = 1000$ reads $8\,\mathrm{MB} \times 10{,}000$ paths $\approx 80\,\mathrm{GB}$ at $\approx 47\,\mathrm{GB/s} \approx 1.7\,\mathrm{s}$. ✓
+dampens the effective exponent to 1.33 over the tested range $N \in \{252, 1000\}$.
+
+An earlier version copied `L` into a separate dense `MatrixXd` and computed `L * z`, a
+$2N^2$-flop dense mat-vec that also multiplied the zero upper triangle. Switching to the
+in-place factorization and triangular view halved the mat-vec (about 115 µs to 62 µs at
+$N = 1000$) and cut the $N = 1000$ run from 1.61 s to 1.13 s, with unchanged prices.
 
 ### Memory
-Peak: $N \times N$ matrix `L` lives on the heap throughout $= N^2 \cdot 8$ bytes.
-At $N = 1000$: 7.6 MB (well below M2's L3 = 16 MB, so `L` stays in cache at small $N$).
+One $N \times N$ matrix is alive during the MC loop, because `L` overwrites `C`: $8N^2$ bytes,
+7.6 MB at $N = 1000$, of which each path reads the lower half. That fits in the M2's 16 MB
+performance-core L2 (the M2 has no L3).
 
 ---
 
@@ -158,8 +167,16 @@ This builds the size-2N circulant embedding:
 c = [γ(0), γ(1), ..., γ(N-1), 0, γ(N-1), ..., γ(1)]
 ```
 The reflection makes the circulant symmetric, which guarantees real eigenvalues.
-The critical property (proved in Wood & Chan 1994): for $H \geq \tfrac{1}{2}$, all eigenvalues
-are **non-negative** at any $N$. For $H < \tfrac{1}{2}$ non-negativity holds only in the large-$N$ limit; finite-$N$ negative eigenvalues are clipped to zero (see the stability analysis).
+The method is exact iff all eigenvalues are **non-negative**. For $H \leq \tfrac{1}{2}$ every
+$\gamma(k)$ with $k \geq 1$ is non-positive, which is the case covered by Craigmile (2003).
+`data/validate_stability.py` confirms that all eigenvalues are strictly positive for every
+$H \in [0.05, 0.501]$ and $N \leq 1008$ tested, so nothing is ever clipped. The margin is thin
+for rough $H$: at $H = 0.1$, $\min\lambda/\gamma(0) = 0.24\%$ at $N = 252$. `fft.hpp` throws
+rather than clipping if a negative eigenvalue appears.
+
+> **Pitfall:** $\gamma(0)$ must be $\Delta t^{2H}$. Writing the $|k-1|^{2H}$ term as 0 at $k = 0$
+> halves $\gamma(0)$ and spuriously makes about 28% of eigenvalues negative at $H = 0.1$. An earlier
+> version of the stability script had exactly this bug.
 
 **Step 3 — FFT to get eigenvalues** (`fft.hpp:53-64`):
 ```cpp
@@ -215,21 +232,29 @@ reconstructs the fBM path $W_{t_i} = \sum_{j \leq i} \delta W_j$. Then $\log\sig
 | Per-path IFFT | $O(N \log N)$ |
 | Full MC | $O(MN \log N)$ |
 
-At $N = 1000$, FFT is $1.5\times$ faster than Cholesky despite both running $M = 10{,}000$ paths,
-because $O(N \log N) \approx 10{,}000$ vs $O(N^2) = 10^6$ operations per path. A sharp reader
-will ask: if the vol simulation is $100\times$ cheaper, why is the wall-clock speedup only
-$1.5\times$? This is Amdahl's Law in action. The price process simulation — $N$ Gaussian draws
-for the innovations, $N$ exponentials to step the stock price, and $N$ payoff accumulations —
-is identical for both methods and takes roughly twice as long as Cholesky's own triangular
-solve at $N = 1000$. That shared $O(N)$ work now dominates FFT's total runtime, diluting the
-$100\times$ vol-simulation gain into a $1.5\times$ end-to-end speedup. The fitted exponent $\alpha \approx 1.01 \approx 1$.
+At $N = 1000$, FFT is only about 9% faster than Cholesky (1.04 s vs 1.13 s), even though a
+size-$2N$ complex FFT is about $10^5$ flops against $N^2 = 10^6$ for the triangular mat-vec.
+A sharp reader will ask why a $10\times$ cheaper sampling step barely shows up in wall-clock
+time. Two reasons, both Amdahl's Law:
 
-**Memory**: only the size-$2N$ complex vectors `c_emb` and `lam` are needed (not $N \times N$).
-At $N = 1000$: ~16 KB — fits in L1 cache. This is the critical memory advantage.
+1. The price-path simulation ($N$ Gaussian draws for the innovations, $2N$ exponentials, and
+   the payoff accumulation) is identical for every method and is a large share of each path.
+2. The FFT sampler draws $4N$ Gaussians per path (real and imaginary parts of $2N$ complex
+   variates) against $N$ for Cholesky. Measured in isolation at $N = 1000$, those draws take
+   60–70 µs, while the inverse FFT itself takes about 8 µs.
+
+The cheapest win is therefore not a faster FFT but fewer random numbers. The real and
+imaginary parts of the IFFT output are *independent* fGn samples (their cross-covariance
+vanishes because $\lambda_j = \lambda_{2N-j}$), so using both would give two paths per transform.
+The fitted exponent is $\alpha \approx 0.95$.
+
+**Memory**: only four size-$2N$ complex vectors are needed (`c_emb`, `lam`, `w_buf`, `out_buf`),
+not an $N \times N$ matrix. At $N = 1000$ that is 128 KB in total. This is the critical memory
+advantage.
 
 ---
 
-## Algorithm 3: Global Low-Rank Approximation via rSVD (`src/hmatrix/hmatrix.hpp`)
+## Algorithm 3: Global Low-Rank Approximation via rSVD (`src/rsvd/lowrank.hpp`)
 
 ### The key insight: covariance has low-rank off-diagonal blocks
 
@@ -237,7 +262,7 @@ The fBM covariance matrix is **smooth** away from its diagonal. Intuitively:
 far-apart time points have a slowly-varying, well-approximated covariance.
 This means the **off-diagonal blocks** are numerically low-rank.
 
-Candès, Demanet & Ying (2008) formalize this:
+Candès, Demanet & Ying (2009) formalize this:
 a kernel `C(s,t)` that is smooth away from the diagonal has off-diagonal blocks with
 singular values decaying rapidly. A true **H-matrix** (Hierarchical matrix) exploits this
 recursively: it partitions the matrix into a quad-tree, keeps near-diagonal blocks dense
@@ -252,51 +277,56 @@ the rough near-diagonal behavior with the same rank-$k$ budget as the smooth far
 which is exactly why singular values decay slowly and large $k$ is needed for low error.
 $L_k = U \operatorname{diag}(\sqrt{S})$ serves as the approximate Cholesky factor.
 
-You can see the SVD decay in `plots/structure_analysis.png` (panel d): for $H = 0.1$ the
-singular values decay more slowly than for $H = 0.5$ — the rough spectrum is harder to compress.
+You can see this in `plots/structure_analysis.png` (panel d). The off-diagonal block's singular
+values fall below 1% of $\sigma_1$ by rank 3 even at $H = 0.1$ (at $H = 0.5$ the block is exactly
+rank 1), but the full matrix's spectrum decays only algebraically. The far field compresses
+well; the diagonal singularity is what a global rank-$k$ approximation cannot absorb.
 
-### The rSVD algorithm (`src/hmatrix/rsvd.hpp`)
+### The rSVD algorithm (`src/rsvd/rsvd.hpp`)
 
 This implements Halko, Martinsson & Tropp (2011) Algorithm 4.4.
 
-**Stage A — Random sketch** (`rsvd.hpp:22-29`):
+**Stage A — Random sketch**:
 ```cpp
 Eigen::MatrixXd Omega(n, l);  // l = k + p (oversampling p=5)
 // ... fill Omega with N(0,1) entries ...
-Eigen::MatrixXd Y = A * Omega;   // N × l  (sketch of A's column space)
+Eigen::MatrixXd Q = orth(A * Omega);   // N × l orthonormal basis (sketch of A's column space)
 ```
-`Y = A·Ω` captures the dominant directions of `A`. If `A` has rank `k`, then `Y`'s
+$A\Omega$ captures the dominant directions of `A`. If `A` has rank `k`, then `Y`'s
 column space captures it perfectly; for approximate rank-k, it captures the `k`
 largest singular value directions. `l = k + p` with oversampling `p=5` reduces
 the failure probability to near zero.
 
-**Power iteration** (`rsvd.hpp:31-34`):
+**Subspace iteration**:
 ```cpp
 for (int iter = 0; iter < q; ++iter) {
-    Y = A * (A.transpose() * Y);
+    Eigen::MatrixXd W = orth(A.transpose() * Q);
+    Q = orth(A * W);
 }
 ```
 This replaces `A` with $(AA^\top)^q \cdot A$ for $q = 2$ iterations. The singular values
-of the iterated matrix are $\sigma_i^{2q+1}$, so the ratio between large and small
+of the iterated matrix are $\sigma_j^{2q+1}$, so the ratio between large and small
 singular values is amplified: $(\sigma_1/\sigma_2)^5$ instead of $\sigma_1/\sigma_2$.
+The `orth` (thin QR) after every product is what distinguishes Algorithm 4.4 from the plain
+power iteration of Algorithm 4.3. Without it, at $H = 0.1$ and $k = 128$ the columns of
+$(AA^\top)^2 A\Omega$ span a dynamic range of $(\sigma_1/\sigma_{k+p})^5 \approx 2 \times 10^{15}$,
+right at the limit of double precision, and the small directions are lost to round-off.
 
 **Why this matters for $H = 0.1$**: the fBM covariance at small $H$ has **slowly-decaying**
 singular values (rough spectrum). Without power iteration, the random sketch can't
 distinguish the top-$k$ directions. With $q = 2$, the sketch quality improves dramatically.
 This is the key insight from Section 4.3 of Halko et al.
 
-**Stage B — QR + small SVD** (`rsvd.hpp:36-43`):
+**Stage B — Project + small SVD**:
 ```cpp
-Eigen::HouseholderQR<Eigen::MatrixXd> qr(Y);
-Eigen::MatrixXd Q = qr.householderQ() * Eigen::MatrixXd::Identity(m, l);
 Eigen::MatrixXd B = Q.transpose() * A;   // l × n  (small!)
 Eigen::JacobiSVD<Eigen::MatrixXd> svd(B, ...);
 ```
-`Q` is an orthonormal basis for the range of `Y`. Projecting `A` onto `Q` gives
+`Q` is an orthonormal basis for the range of $(AA^\top)^q A\Omega$. Projecting `A` onto `Q` gives
 the small $l \times n$ matrix `B`. The SVD of `B` costs $O(l^2 n)$ — much cheaper than $O(N^3)$
 for the full SVD.
 
-**Reassemble** (`rsvd.hpp:45-48`):
+**Reassemble**:
 ```cpp
 result.U  = Q * svd.matrixU().leftCols(k);
 result.S  = svd.singularValues().head(k);
@@ -304,9 +334,9 @@ result.Vt = svd.matrixV().leftCols(k).transpose();
 ```
 The final approximation is $A \approx U \operatorname{diag}(S) V^\top$ with $U \in \mathbb{R}^{N \times k}$.
 
-### Using rSVD for path generation (`hmatrix.hpp:35-52`)
+### Using rSVD for path generation (`lowrank.hpp`, `price()`)
 
-**Approximate Cholesky factor** (`hmatrix.hpp:38-39`):
+**Approximate Cholesky factor**:
 ```cpp
 Eigen::VectorXd sqrt_S = decomp.S.cwiseMax(0.0).cwiseSqrt();
 Eigen::MatrixXd Lk = decomp.U * sqrt_S.asDiagonal();  // N × k
@@ -315,15 +345,15 @@ For a symmetric PSD matrix, $C \approx U S U^\top$, so
 $C \approx (U\sqrt{S})(U\sqrt{S})^\top = L_k L_k^\top$.
 The `cwiseMax(0.0)` clips any tiny negative singular values from numerical error.
 
-**Per-path sampling** (`hmatrix.hpp:44-49`):
+**Per-path sampling**:
 ```cpp
 for (int i = 0; i < k; ++i) z(i) = norm(rng);
 Eigen::VectorXd lv = nu * (Lk * z);  // O(N*k)
 ```
-Instead of an $N \times N$ triangular solve, we compute an **$N \times k$ matrix times a $k$-vector**.
+Instead of an $N \times N$ mat-vec, we compute an **$N \times k$ matrix times a $k$-vector**.
 At $k = 32$, $N = 1000$: $32{,}000$ operations vs $10^6$ for Cholesky. This is the per-path speedup.
 
-### The freed variant (`hmatrix.hpp:93-131`)
+### The freed variant (`lowrank.hpp`, `price_freed_timed()`)
 
 The standard `price_timed()` keeps the full $N \times N$ matrix `C` alive for the function's
 entire scope (Eigen matrices are RAII — they're freed when the variable leaves scope).
@@ -357,7 +387,7 @@ between the theoretical $O(N^2)$ and $O(Nk)$ memory profiles visible in
 
 This does not undercut the algorithm's advantage. The setup is $O(N^2 k)$ vs Cholesky's $O(N^3)$ — a factor of $N/k$ cheaper — and the per-path MC loop is $O(Nk)$ vs $O(N^2)$, so the full cost $O(N^2 k + MNk)$ is substantially less than Cholesky's $O(N^3 + MN^2)$ for any $k \ll N$.
 
-Fitted exponent $\alpha \approx 1.06$ (close to linear in $N$ at fixed $k = 32$). The crossover
+Fitted exponent $\alpha \approx 1.05$ (close to linear in $N$ at fixed $k = 32$). The crossover
 point vs Cholesky: at $k = 32$, $O(MN \cdot 32) < O(MN^2)$ when $32 < N$, which is always true.
 
 ### Accuracy tradeoff
@@ -419,13 +449,12 @@ price analytically — no closed-form exists under stochastic volatility.
 | **Construction** | $O(N^3)$ | $O(N \log N)$ | $O(N^2k)$ with rSVD |
 | **Per path** | $O(N^2)$ | $O(N \log N)$ | $O(Nk)$ |
 | **Memory** | $O(N^2)$ | $O(N)$ | $O(N^2)$ or $O(Nk)$ if freed |
-| **Exact?** | Yes | Asymptotically (exact for $H \geq \tfrac{1}{2}$; clipping bias for $H < \tfrac{1}{2}$ at finite $N$) | No (truncation error) |
+| **Exact?** | Yes | Yes (all circulant eigenvalues verified $> 0$) | No (truncation error) |
 | **Key paper** | — | Wood & Chan 1994 | Halko et al. 2011 |
-| **Bottleneck at $N=1000$** | Memory bandwidth | Compute | Compute |
-| **Fitted $\alpha$** | 1.54 | 1.01 | 1.06 |
+| **Bottleneck at $N=1000$** | $N^2$ mat-vec per path | Shared $O(N)$ price-path work | Shared $O(N)$ price-path work |
+| **Fitted $\alpha$** | 1.33 | 0.95 | 1.02 |
 
-The FFT method wins on memory ($O(N)$ vs $O(N^2)$) and is asymptotically exact (though
-subject to minor clipping bias at finite grids for rough $H$) — it is the recommended
+The FFT method wins on memory ($O(N)$ vs $O(N^2)$) and is exact on the grid, so it is the recommended
 method for production use. The global rSVD method is valuable pedagogically because it
 exposes the low-rank structure of the problem and provides a tunable accuracy-speed
 tradeoff. Cholesky is the baseline that makes all other methods' improvements concrete.
@@ -444,9 +473,11 @@ $N = 10{,}000$ (minute-resolution paths over one year), the lower-triangular fac
 alone requires $\approx 800$ MB and the factorization takes several minutes. These are
 hard limits — no constant-factor optimization can fix cubic growth.
 
-**Memory-bandwidth ceiling.** The per-path $O(N^2)$ triangular solve is bandwidth-limited,
-not compute-limited: each path re-reads the full $L$ matrix from DRAM. A faster CPU core
-gives almost no benefit; only wider memory buses (e.g., a GPU or HBM) would help materially.
+**Memory-bandwidth ceiling at larger $N$.** Each path re-reads all of $L$. Up to $N = 1000$
+the 7.6 MB matrix fits in the M2's 16 MB L2. Beyond $N \approx 1450$ it no longer fits, and
+every path then streams $8N^2$ bytes from DRAM, so the loop becomes bandwidth-bound and a
+faster core helps little. The benchmark's `est_bandwidth_GBs` column (up to 50 GB/s) is an
+effective streaming rate, not a DRAM measurement, so it does not show this regime directly.
 
 **Further directions.** Quasi-Monte Carlo (QMC) methods — replacing pseudo-random draws
 with low-discrepancy Sobol or Halton sequences — can reduce MC standard error from
@@ -456,12 +487,11 @@ necessary.
 
 ### Algorithm 2 — Circulant Embedding + FFT
 
-**Finite-$N$ eigenvalue clipping for $H < \tfrac{1}{2}$.** The PSD guarantee of Wood &
-Chan (1994) holds asymptotically; at finite $N$ with $H = 0.1$, roughly 28% of circulant
-eigenvalues are negative and must be clipped to zero (see `plots/stability_report.png`).
-Clipping discards $\approx 15\%$ of spectral energy, introducing a small bias that
-decreases as $N \to \infty$ but never vanishes at any finite grid. The method is therefore
-not strictly exact for rough $H$ at practical $N$, only asymptotically exact.
+**Thin positivity margin for $H < \tfrac{1}{2}$.** No eigenvalue is ever negative here, but
+the smallest one shrinks like $N^{-(1-2H)}$ relative to $\gamma(0)$: $0.24\%$ at $N = 252$ and
+$0.08\%$ at $N = 1000$ for $H = 0.1$ (see `plots/stability_report.png`). This is harmless in
+double precision, but it is why the code checks for negative eigenvalues and throws instead of
+silently clipping.
 
 **Restricted to stationary processes.** The embedding exploits the Toeplitz structure
 of the fGn covariance, which follows from stationarity of the increments. Any departure
@@ -469,11 +499,11 @@ from stationarity — time-varying parameters, non-homogeneous volatility grids,
 to the Volterra-integral representation used in the rough Bergomi model — breaks the
 Toeplitz structure and invalidates the method entirely. For those models the Hybrid Scheme
 (Bennedsen, Lunde & Pakkanen 2017) is the natural replacement; see the "A Fourth Method"
-section in `README.md`.
+entry under "Future work" in `README.md`.
 
-**Further directions.** Embedding into a $4N$ or $8N$ circulant instead of $2N$ drives
-more eigenvalues positive at small $H$ and small $N$, trading higher FFT cost for fewer
-clipping artifacts. For non-stationary settings, the Hybrid Scheme or a direct Gaussian
+**Further directions.** For processes whose minimal embedding is *not* PSD (e.g. some
+long-memory kernels), padding to a $4N$ or $8N$ circulant is the standard fix. For
+non-stationary settings, the Hybrid Scheme or a direct Gaussian
 simulation via Cholesky on a reduced grid are the alternatives.
 
 ### Algorithm 3 — Global Low-Rank rSVD
@@ -487,7 +517,7 @@ needed here, because those blocks are isolated from the singularity.
 
 By applying one global rSVD to the entire $N \times N$ matrix, the rank-$k$ budget must
 represent both the rough near-diagonal behavior and the smooth far field simultaneously.
-This is why $k = 128$ is needed for 1.2% Frobenius error on a $1000 \times 1000$ matrix —
+This is why $k = 128$ is needed for 1.2% Frobenius error on a $500 \times 500$ matrix —
 roughly 10–16$\times$ larger than the per-block ranks a true H-matrix would require for
 comparable accuracy. It also explains the $O(N^2 k)$ construction cost: a true H-matrix
 can be built in $O(N \log N)$ or $O(N \log^2 N)$ precisely because it never forms the
@@ -515,9 +545,7 @@ a fast-algorithms course aims to teach:
 - **FFT** exploits the *stationarity* of fGn increments — a property of the process
   itself — to reduce the covariance matrix to a Toeplitz form embeddable in a circulant.
   The $O(N \log N)$ cost is a direct reward for recognizing and using that structure.
-  Crucially, it achieves this exactness for standard and long-memory processes, remaining
-  the asymptotically optimal choice even when finite-grid clipping is required for rough
-  volatility.
+  It stays exact for rough $H$ as well, since every circulant eigenvalue is positive.
 - **Global rSVD** exploits the *smoothness* of the kernel away from the diagonal — a
   property of the geometry of the covariance function — to compress the matrix into a
   low-rank factor. It is cheaper per path than FFT for small $k$, but trades away
