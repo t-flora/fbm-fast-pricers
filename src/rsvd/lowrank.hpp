@@ -22,21 +22,19 @@
 
 namespace lowrank {
 
-inline double price(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
-    using namespace params;
-    double dt = T / N;
-
-    // Build full covariance once, then compress
-    Eigen::MatrixXd C = build_fbm_cov_matrix(N, H, T);
-
-    // rSVD: C ≈ U * diag(S) * Vt  (for SPD matrix U ≈ V, but rsvd gives general form)
-    int k = std::min(rank_k, N);
+// Approximate factor L_k = U * diag(sqrt(max(S, 0)))  [N × k]  with L_k L_k^T ≈ C
+inline Eigen::MatrixXd lowrank_factor(const Eigen::MatrixXd& C, int rank_k, unsigned seed) {
+    int k = std::min(rank_k, static_cast<int>(C.rows()));
     RSVD decomp = rsvd(C, k, /*oversampling=*/5, /*power_iters=*/2, seed);
-
-    // Approximate sqrt factor L_k = U * diag(sqrt(max(S,0)))  [N × k]
     Eigen::VectorXd sqrt_S = decomp.S.cwiseMax(0.0).cwiseSqrt();
-    Eigen::MatrixXd Lk = decomp.U * sqrt_S.asDiagonal();  // N × k
+    return decomp.U * sqrt_S.asDiagonal();
+}
 
+// Monte Carlo loop shared by all variants
+inline double mc_price(const Eigen::MatrixXd& Lk, int M_paths, unsigned seed) {
+    using namespace params;
+    int N = Lk.rows(), k = Lk.cols();
+    double dt = T / N;
     auto rng = make_rng(seed);
     std::normal_distribution<double> norm(0.0, 1.0);
     Eigen::VectorXd z(k);
@@ -52,47 +50,36 @@ inline double price(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
     return std::exp(-r * T) * payoff_sum / M_paths;
 }
 
-// Construction vs MC timing breakdown
+// Construction vs MC timing breakdown. C stays alive (O(N^2)) through the MC loop.
 struct LowRankTimed { double price, t_construct, t_mc; };
 
 inline LowRankTimed price_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
     using namespace params;
     using Clock = std::chrono::high_resolution_clock;
-    double dt = T / N;
 
     auto t0 = Clock::now();
     Eigen::MatrixXd C = build_fbm_cov_matrix(N, H, T);
-    int k = std::min(rank_k, N);
-    RSVD decomp = rsvd(C, k, /*oversampling=*/5, /*power_iters=*/2, seed);
-    Eigen::VectorXd sqrt_S = decomp.S.cwiseMax(0.0).cwiseSqrt();
-    Eigen::MatrixXd Lk = decomp.U * sqrt_S.asDiagonal();
+    Eigen::MatrixXd Lk = lowrank_factor(C, rank_k, seed);
     double t_construct = std::chrono::duration<double>(Clock::now() - t0).count();
 
-    auto rng = make_rng(seed);
-    std::normal_distribution<double> norm(0.0, 1.0);
-    Eigen::VectorXd z(k);
-    double payoff_sum = 0.0;
-
     t0 = Clock::now();
-    for (int m = 0; m < M_paths; ++m) {
-        for (int i = 0; i < k; ++i) z(i) = norm(rng);
-        Eigen::VectorXd lv = nu * (Lk * z);
-        std::vector<double> log_vol(lv.data(), lv.data() + N);
-        auto inno = randn(N, rng);
-        payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt), K);
-    }
+    double p = mc_price(Lk, M_paths, seed);
     double t_mc = std::chrono::duration<double>(Clock::now() - t0).count();
-    return { std::exp(-r * T) * payoff_sum / M_paths, t_construct, t_mc };
+    return { p, t_construct, t_mc };
 }
 
-// C freed before MC loop: peak RSS drops to O(N*k) after construction.
+inline double price(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
+    return price_timed(N, M_paths, rank_k, seed).price;
+}
+
+// C freed before MC loop: only Lk (N×k) is resident during sampling.
 // Compare to price_timed() where C stays alive (O(N^2)) throughout.
+// The lifetime peak is the same for both (C must exist while Lk is built).
 struct LowRankFreedTimed { double price, t_construct, t_mc; };
 
 inline LowRankFreedTimed price_freed_timed(int N, int M_paths, int rank_k = 16, unsigned seed = 42) {
     using namespace params;
     using Clock = std::chrono::high_resolution_clock;
-    double dt = T / N;
 
     // Construction block: C destroyed when this scope exits.
     Eigen::MatrixXd Lk;
@@ -100,29 +87,14 @@ inline LowRankFreedTimed price_freed_timed(int N, int M_paths, int rank_k = 16, 
     {
         auto t0 = Clock::now();
         Eigen::MatrixXd C = build_fbm_cov_matrix(N, H, T);
-        int k = std::min(rank_k, N);
-        RSVD decomp = rsvd(C, k, /*oversampling=*/5, /*power_iters=*/2, seed);
-        Eigen::VectorXd sqrt_S = decomp.S.cwiseMax(0.0).cwiseSqrt();
-        Lk = decomp.U * sqrt_S.asDiagonal();  // N × k
+        Lk = lowrank_factor(C, rank_k, seed);
         t_construct = std::chrono::duration<double>(Clock::now() - t0).count();
     }  // C destroyed here; only Lk (N×k) remains on the heap
 
-    int k = Lk.cols();
-    auto rng = make_rng(seed);
-    std::normal_distribution<double> norm(0.0, 1.0);
-    Eigen::VectorXd z(k);
-    double payoff_sum = 0.0;
-
     auto t1 = Clock::now();
-    for (int m = 0; m < M_paths; ++m) {
-        for (int i = 0; i < k; ++i) z(i) = norm(rng);
-        Eigen::VectorXd lv = nu * (Lk * z);
-        std::vector<double> log_vol(lv.data(), lv.data() + N);
-        auto inno = randn(N, rng);
-        payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt), K);
-    }
+    double p = mc_price(Lk, M_paths, seed);
     double t_mc = std::chrono::duration<double>(Clock::now() - t1).count();
-    return { std::exp(-r * T) * payoff_sum / M_paths, t_construct, t_mc };
+    return { p, t_construct, t_mc };
 }
 
 } // namespace lowrank

@@ -2,6 +2,7 @@
 // Randomized SVD  (Algorithm 4.4, Halko, Martinsson & Tropp, 2011)
 // Returns U (m×k), S (k), Vt (k×n) such that A ≈ U * S.asDiagonal() * Vt
 #include <Eigen/Dense>
+#include <algorithm>
 #include <random>
 
 struct RSVD {
@@ -18,7 +19,8 @@ inline RSVD rsvd(const Eigen::MatrixXd& A, int k, int p = 5, int q = 2,
                  unsigned seed = 42)
 {
     int n = A.cols();
-    int l = k + p;
+    // Sketch width k + p, but never wider than the matrix (k close to min(m, n))
+    int l = std::min(k + p, static_cast<int>(std::min(A.rows(), A.cols())));
 
     // Stage A: form a sketch
     std::mt19937 rng(seed);

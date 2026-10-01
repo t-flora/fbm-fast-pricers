@@ -5,8 +5,8 @@
 // Key insight: fBM itself is non-stationary, so its covariance matrix is NOT Toeplitz.
 // However, fBM *increments* (fractional Gaussian noise, fGn) ARE stationary, so their
 // covariance IS Toeplitz and embeds into a circulant. For H ≤ ½ the fGn autocovariance is
-// non-positive at every nonzero lag and the embedding is PSD (Craigmile 2003); verified
-// numerically for all H, N used here (see data/validate_stability.py), so sampling is exact.
+// non-positive at every nonzero lag and the embedding is PSD (Craigmile 2003); the smallest
+// eigenvalue is λ_0 = dt^{2H} (N^{2H} − (N−1)^{2H}) > 0, so sampling is exact.
 //
 // Algorithm:
 //   1. Compute fGn autocovariance γ(k) = (dt^{2H}/2)*((k+1)^{2H} - 2k^{2H} + (k-1)^{2H})
@@ -18,8 +18,8 @@
 #include <fftw3.h>
 #include <chrono>
 #include <complex>
+#include <random>
 #include <vector>
-#include <numeric>
 #include <cmath>
 #include <stdexcept>
 #include "common/params.hpp"
@@ -36,73 +36,81 @@ inline double fgn_cov(int k, double H, double dt) {
     return 0.5 * std::pow(dt, h2) * (std::pow(k + 1.0, h2) + km1 - 2.0 * std::pow(k, h2));
 }
 
-inline double price(int N, int M_paths, unsigned seed = 42) {
-    using namespace params;
-    double dt = T / N;
+// Eigenvalues of the 2N circulant embedding of the fGn autocovariance.
+// Throws if any is negative (the embedding would not be a valid covariance).
+inline std::vector<double> circulant_eigenvalues(int N, double H, double dt) {
     int M = 2 * N;
-
-    // ── Step 1: Build circulant first row from fGn autocovariance ───────────
-    // Using complex arrays for full c2c transform (avoids Hermitian bookkeeping)
-    std::vector<std::complex<double>> c_emb(M, 0.0);
+    // Complex arrays for a full c2c transform (avoids Hermitian bookkeeping)
+    std::vector<std::complex<double>> c_emb(M, 0.0), lam(M);
     for (int j = 0; j < N; ++j)
         c_emb[j] = fgn_cov(j, H, dt);
     for (int j = 1; j < N; ++j)
         c_emb[M - j] = c_emb[j];  // symmetric reflection; c_emb[N] stays 0
 
-    // ── Step 2: Forward FFT → eigenvalues λ (all real for symmetric input) ──
-    std::vector<std::complex<double>> lam(M);
-    {
-        fftw_plan p = fftw_plan_dft_1d(
-            M,
-            reinterpret_cast<fftw_complex*>(c_emb.data()),
-            reinterpret_cast<fftw_complex*>(lam.data()),
-            FFTW_FORWARD, FFTW_ESTIMATE);
-        fftw_execute(p);
-        fftw_destroy_plan(p);
-    }
+    fftw_plan p = fftw_plan_dft_1d(
+        M,
+        reinterpret_cast<fftw_complex*>(c_emb.data()),
+        reinterpret_cast<fftw_complex*>(lam.data()),
+        FFTW_FORWARD, FFTW_ESTIMATE);
+    fftw_execute(p);
+    fftw_destroy_plan(p);
 
-    // All imaginary parts should be ≈ 0 (real symmetric input)
-    for (int k = 0; k < M; ++k)
+    // Imaginary parts are ≈ 0 (real symmetric input)
+    std::vector<double> out(M);
+    for (int k = 0; k < M; ++k) {
         if (lam[k].real() < -1e-8)
             throw std::runtime_error("fGn circulant embedding not PSD");
+        out[k] = lam[k].real();
+    }
+    return out;
+}
 
-    // ── Step 3: Pre-allocate FFTW synthesis buffer (reused each path) ────────
-    std::vector<std::complex<double>> w_buf(M), out_buf(M);
-    fftw_plan plan_inv = fftw_plan_dft_1d(
-        M,
-        reinterpret_cast<fftw_complex*>(w_buf.data()),
-        reinterpret_cast<fftw_complex*>(out_buf.data()),
-        FFTW_BACKWARD, FFTW_ESTIMATE);
+// Draws fBM paths nu * W^H(t_1..t_N) by circulant embedding. The eigenvalue scaling,
+// the inverse-FFT plan and its buffers are set up once and reused for every path.
+class FbmSampler {
+public:
+    FbmSampler(int N, double H, double dt)
+        : N_(N), M_(2 * N), scale_(M_), w_(M_), out_(M_)
+    {
+        std::vector<double> lam = circulant_eigenvalues(N, H, dt);
+        for (int j = 0; j < M_; ++j)
+            scale_[j] = std::sqrt(std::max(lam[j], 0.0) / M_);
+        plan_ = fftw_plan_dft_1d(
+            M_,
+            reinterpret_cast<fftw_complex*>(w_.data()),
+            reinterpret_cast<fftw_complex*>(out_.data()),
+            FFTW_BACKWARD, FFTW_ESTIMATE);
+    }
+    ~FbmSampler() { fftw_destroy_plan(plan_); }
+    FbmSampler(const FbmSampler&) = delete;
+    FbmSampler& operator=(const FbmSampler&) = delete;
 
-    auto rng = make_rng(seed);
-    std::normal_distribution<double> norm(0.0, 1.0);
-    double payoff_sum = 0.0;
-
-    for (int m = 0; m < M_paths; ++m) {
-        // ── Step 4: Generate one fGn path via IFFT ───────────────────────
-        // w[j] = sqrt(λ[j].real() / M) * (a + ib)  →  Cov(Re(IFFT(w))) = Toeplitz(γ)
-        for (int j = 0; j < M; ++j) {
-            double s = std::sqrt(std::max(lam[j].real(), 0.0) / M);
-            w_buf[j] = s * std::complex<double>(norm(rng), norm(rng));
+    // Writes one path into path[0..N-1].
+    // w[j] = sqrt(λ[j] / M) * (a + ib)  →  Cov(Re(IFFT(w))) = Toeplitz(γ)
+    void sample(std::mt19937& rng, std::normal_distribution<double>& norm,
+                double nu, std::vector<double>& path)
+    {
+        for (int j = 0; j < M_; ++j) {
+            double a = norm(rng);
+            double b = norm(rng);
+            w_[j] = scale_[j] * std::complex<double>(a, b);
         }
-        fftw_execute(plan_inv);
-        // out_buf[j].real() for j=0..N-1 are fGn increments (FFTW unnormalized IFFT)
-
-        // ── Step 5: Cumsum → fBM log-vol path ────────────────────────────
-        std::vector<double> log_vol(N);
+        fftw_execute(plan_);
+        // out_[i].real() for i=0..N-1 are fGn increments (FFTW unnormalized IFFT);
+        // their cumulative sum is the fBM path
         double acc = 0.0;
-        for (int i = 0; i < N; ++i) {
-            acc += out_buf[i].real();
-            log_vol[i] = nu * acc;
+        for (int i = 0; i < N_; ++i) {
+            acc += out_[i].real();
+            path[i] = nu * acc;
         }
-
-        auto inno = randn(N, rng);
-        payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt), K);
     }
 
-    fftw_destroy_plan(plan_inv);
-    return std::exp(-r * T) * payoff_sum / M_paths;
-}
+private:
+    int N_, M_;
+    std::vector<double> scale_;
+    std::vector<std::complex<double>> w_, out_;
+    fftw_plan plan_;
+};
 
 // Construction vs MC timing breakdown
 struct FFTTimed { double price, t_construct, t_mc; };
@@ -111,63 +119,28 @@ inline FFTTimed price_timed(int N, int M_paths, unsigned seed = 42) {
     using namespace params;
     using Clock = std::chrono::high_resolution_clock;
     double dt = T / N;
-    int M = 2 * N;
 
     auto t0 = Clock::now();
-    // ── Construction: build eigenvalues + create IFFT plan ───────────────────
-    std::vector<std::complex<double>> c_emb(M, 0.0);
-    for (int j = 0; j < N; ++j)
-        c_emb[j] = fgn_cov(j, H, dt);
-    for (int j = 1; j < N; ++j)
-        c_emb[M - j] = c_emb[j];
-
-    std::vector<std::complex<double>> lam(M);
-    {
-        fftw_plan p = fftw_plan_dft_1d(
-            M,
-            reinterpret_cast<fftw_complex*>(c_emb.data()),
-            reinterpret_cast<fftw_complex*>(lam.data()),
-            FFTW_FORWARD, FFTW_ESTIMATE);
-        fftw_execute(p);
-        fftw_destroy_plan(p);
-    }
-    for (int k = 0; k < M; ++k)
-        if (lam[k].real() < -1e-8)
-            throw std::runtime_error("fGn circulant embedding not PSD");
-
-    std::vector<std::complex<double>> w_buf(M), out_buf(M);
-    fftw_plan plan_inv = fftw_plan_dft_1d(
-        M,
-        reinterpret_cast<fftw_complex*>(w_buf.data()),
-        reinterpret_cast<fftw_complex*>(out_buf.data()),
-        FFTW_BACKWARD, FFTW_ESTIMATE);
+    FbmSampler sampler(N, H, dt);  // eigenvalues + IFFT plan
     double t_construct = std::chrono::duration<double>(Clock::now() - t0).count();
 
-    // ── MC loop ───────────────────────────────────────────────────────────────
     auto rng = make_rng(seed);
     std::normal_distribution<double> norm(0.0, 1.0);
+    std::vector<double> log_vol(N);
     double payoff_sum = 0.0;
 
     t0 = Clock::now();
     for (int m = 0; m < M_paths; ++m) {
-        for (int j = 0; j < M; ++j) {
-            double s = std::sqrt(std::max(lam[j].real(), 0.0) / M);
-            w_buf[j] = s * std::complex<double>(norm(rng), norm(rng));
-        }
-        fftw_execute(plan_inv);
-        std::vector<double> log_vol(N);
-        double acc = 0.0;
-        for (int i = 0; i < N; ++i) {
-            acc += out_buf[i].real();
-            log_vol[i] = nu * acc;
-        }
+        sampler.sample(rng, norm, nu, log_vol);
         auto inno = randn(N, rng);
         payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt), K);
     }
     double t_mc = std::chrono::duration<double>(Clock::now() - t0).count();
-
-    fftw_destroy_plan(plan_inv);
     return { std::exp(-r * T) * payoff_sum / M_paths, t_construct, t_mc };
+}
+
+inline double price(int N, int M_paths, unsigned seed = 42) {
+    return price_timed(N, M_paths, seed).price;
 }
 
 } // namespace fft_pricer
