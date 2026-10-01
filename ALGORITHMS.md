@@ -56,7 +56,7 @@ This works because $\text{Cov}(Lz) = L \cdot \text{Cov}(z) \cdot L^\top = L \cdo
 
 ### Key lines
 
-**Build the covariance matrix** (`cholesky.hpp:20`):
+**Build the covariance matrix** (inside `fbm_cholesky_factor`):
 ```cpp
 Eigen::MatrixXd C = build_fbm_cov_matrix(N, H, T);
 ```
@@ -141,11 +141,15 @@ by the DFT. This is the Wood & Chan (1994) / Davies-Harte method.
 You can verify this structure visually in `plots/structure_analysis.png` (panel b):
 the fGn heatmap shows perfectly flat diagonals, while the fBM heatmap (panel a) does not.
 
-### The algorithm (Steps 1–5 in `fft.hpp:39-82`)
+### The algorithm (Steps 1–5 in `fft.hpp`)
 
-**Step 1 — fGn autocovariance** (`fft.hpp:26-31`):
+The code is split in two: `circulant_eigenvalues()` does the one-time setup (Steps 1–3), and
+the `FbmSampler` class holds the eigenvalue scaling and the inverse-FFT plan and draws one path
+per call to `sample()` (Steps 4–5).
+
+**Step 1 — fGn autocovariance** (`fgn_cov`):
 ```cpp
-static inline double fgn_cov(int k, double H, double dt) {
+inline double fgn_cov(int k, double H, double dt) {
     double h2 = 2.0 * H;
     if (k == 0) return std::pow(dt, h2);
     double km1 = (k == 1) ? 0.0 : std::pow(k - 1.0, h2);
@@ -154,9 +158,9 @@ static inline double fgn_cov(int k, double H, double dt) {
 ```
 This is $\gamma(k)$. Note `γ(0) = dt^{2H}` (variance of each increment).
 
-**Step 2 — Build the circulant first row** (`fft.hpp:44-50`):
+**Step 2 — Build the circulant first row** (`circulant_eigenvalues`):
 ```cpp
-std::vector<std::complex<double>> c_emb(M, 0.0);  // M = 2N
+std::vector<std::complex<double>> c_emb(M, 0.0), lam(M);  // M = 2N
 for (int j = 0; j < N; ++j)
     c_emb[j] = fgn_cov(j, H, dt);
 for (int j = 1; j < N; ++j)
@@ -168,61 +172,63 @@ c = [γ(0), γ(1), ..., γ(N-1), 0, γ(N-1), ..., γ(1)]
 ```
 The reflection makes the circulant symmetric, which guarantees real eigenvalues.
 The method is exact iff all eigenvalues are **non-negative**. For $H \leq \tfrac{1}{2}$ every
-$\gamma(k)$ with $k \geq 1$ is non-positive, which is the case covered by Craigmile (2003).
-`data/validate_stability.py` confirms that all eigenvalues are strictly positive for every
-$H \in [0.05, 0.501]$ and $N \leq 1008$ tested, so nothing is ever clipped. The margin is thin
-for rough $H$: at $H = 0.1$, $\min\lambda/\gamma(0) = 0.24\%$ at $N = 252$. `fft.hpp` throws
-rather than clipping if a negative eigenvalue appears.
+$\gamma(k)$ with $k \geq 1$ is negative (Craigmile 2003), so every eigenvalue
+$\lambda_j = \gamma(0) + 2\sum_k \gamma(k)\cos(\pi jk/N)$ is at least $\lambda_0$, which telescopes
+to $\Delta t^{2H}(N^{2H} - (N-1)^{2H}) > 0$. The margin is thin for rough $H$: at $H = 0.1$,
+$\min\lambda/\gamma(0) = 0.24\%$ at $N = 252$. `tests/test_samplers.cpp` checks this closed form.
 
 > **Pitfall:** $\gamma(0)$ must be $\Delta t^{2H}$. Writing the $|k-1|^{2H}$ term as 0 at $k = 0$
 > halves $\gamma(0)$ and spuriously makes about 28% of eigenvalues negative at $H = 0.1$. An earlier
-> version of the stability script had exactly this bug.
+> version of the stability script had exactly this bug; both test suites now catch it.
 
-**Step 3 — FFT to get eigenvalues** (`fft.hpp:53-64`):
+**Step 3 — FFT to get eigenvalues** (`circulant_eigenvalues`):
 ```cpp
 fftw_plan p = fftw_plan_dft_1d(M, ..., FFTW_FORWARD, FFTW_ESTIMATE);
 fftw_execute(p);
 fftw_destroy_plan(p);
+// then: throw if any lam[k].real() < -1e-8, return the real parts
 ```
 The DFT of a circulant's first row gives its eigenvalues `λ`. This is the core
 mathematical fact: **a circulant matrix C is diagonalized by the DFT matrix F**,
 meaning `C = F·diag(λ)·F*`. Cost: $O(N \log N)$. Done once.
 
-**Step 4 — Per-path synthesis** (`fft.hpp:72-79`):
+**Step 4 — Per-path synthesis** (`FbmSampler::sample`):
 ```cpp
-for (int j = 0; j < M; ++j) {
-    double s = std::sqrt(std::max(lam[j].real(), 0.0) / M);
-    w_buf[j] = s * std::complex<double>(norm(rng), norm(rng));
+// constructor: scale_[j] = sqrt(max(lam[j], 0) / M), plus a reusable FFTW_BACKWARD plan
+for (int j = 0; j < M_; ++j) {
+    double a = norm(rng);
+    double b = norm(rng);
+    w_[j] = scale_[j] * std::complex<double>(a, b);
 }
-fftw_execute(plan_inv);
+fftw_execute(plan_);
 ```
-This samples $w_j = \sqrt{\lambda_j / M} \cdot (a_j + i b_j)$ with $a_j, b_j \sim \mathcal{N}(0,1)$,
-then computes the IFFT. Why does this work?
+This samples $w_j = \sqrt{\lambda_j / M}\,(a_j + i b_j)$ with $a_j, b_j \sim \mathcal{N}(0,1)$ and
+applies FFTW's unnormalized inverse transform, $x_n = \sum_j w_j e^{2\pi i jn/M}$. Why does this
+give the right covariance? Write $\theta_{jn} = 2\pi jn/M$. Then
+$\operatorname{Re} x_n = \sum_j \sqrt{\lambda_j/M}\,(a_j\cos\theta_{jn} - b_j\sin\theta_{jn})$, and
+because the $a_j, b_j$ are independent standard normals,
 
-If $C = F \cdot \operatorname{diag}(\lambda) \cdot F^*$, then we want $x$ such that $\operatorname{Cov}(x) = C$. Let $x = F \cdot w$.
-Then $\operatorname{Cov}(x) = F \cdot \operatorname{Cov}(w) \cdot F^* = F \cdot \operatorname{diag}(\lambda/M) \cdot \operatorname{diag}(M) \cdot F^* = F \cdot \operatorname{diag}(\lambda) \cdot F^* = C$. ✓
+$$\operatorname{Cov}(\operatorname{Re} x_n, \operatorname{Re} x_m) = \sum_j \frac{\lambda_j}{M}\cos\frac{2\pi j(n-m)}{M} = c_{n-m},$$
 
-**A note on complex vs real covariance.** Each $w_j$ is complex with independent real and imaginary
-parts each of variance $\lambda_j/M$, so the Hermitian variance is $E[|w_j|^2] = 2\lambda_j/M$ — a
-factor of 2 larger than what the sketch above uses. This factor is recovered exactly when the code
-takes `out_buf[i].real()` in Step 5: for a symmetric circulant with real eigenvalues, the real and
-imaginary parts of the IFFT output carry equal power (by the $\cos^2 + \sin^2 = 1$ identity across
-all frequency components), so extracting the real part halves the total variance back to the correct
-target $\gamma(0) = \Delta t^{2H}$. The sketch above implicitly absorbs this factor and is correct in its final result.
+the inverse DFT of the eigenvalues, i.e. the circulant's first row. For $|n - m| < N$ that is
+exactly $\gamma(|n-m|)$. The same calculation gives $\operatorname{Im} x$ the same covariance, and
+$\operatorname{Cov}(\operatorname{Re} x_n, \operatorname{Im} x_m) = \sum_j (\lambda_j/M)\sin(\cdot) = 0$
+because $\lambda_j = \lambda_{M-j}$. So the real and imaginary parts are two *independent* fGn
+samples; the current code uses only the real part.
 
-The `/ M` comes from FFTW's unnormalized convention (IFFT multiplies by $M$).
-The `std::max(..., 0.0)` clips any tiny negative eigenvalues from floating-point error.
+The `/ M` comes from FFTW's unnormalized convention, and the `std::max(..., 0.0)` is defensive
+(the eigenvalues are already checked to be non-negative).
 
-**Step 5 — Cumsum to recover fBM** (`fft.hpp:82-87`):
+**Step 5 — Cumsum to recover fBM** (`FbmSampler::sample`):
 ```cpp
 double acc = 0.0;
-for (int i = 0; i < N; ++i) {
-    acc += out_buf[i].real();
-    log_vol[i] = nu * acc;
+for (int i = 0; i < N_; ++i) {
+    acc += out_[i].real();
+    path[i] = nu * acc;
 }
 ```
 We generated fGn increments (first N entries of the IFFT output). A cumulative sum
-reconstructs the fBM path $W_{t_i} = \sum_{j \leq i} \delta W_j$. Then $\log\sigma_i = \nu \cdot W_{t_i}$.
+reconstructs the fBM path $W_{t_n} = \sum_{j \leq n} \delta W_j$. Then $\log\sigma_n = \nu \cdot W_{t_n}$.
 
 ### Complexity
 
@@ -248,8 +254,9 @@ imaginary parts of the IFFT output are *independent* fGn samples (their cross-co
 vanishes because $\lambda_j = \lambda_{2N-j}$), so using both would give two paths per transform.
 The fitted exponent is $\alpha \approx 0.95$.
 
-**Memory**: only four size-$2N$ complex vectors are needed (`c_emb`, `lam`, `w_buf`, `out_buf`),
-not an $N \times N$ matrix. At $N = 1000$ that is 128 KB in total. This is the critical memory
+**Memory**: during the MC loop the sampler holds the $2N$ scale factors and two length-$2N$
+complex buffers for the inverse FFT, not an $N \times N$ matrix. At $N = 1000$ that is 80 KB
+(the setup arrays `c_emb` and `lam` are freed after construction). This is the critical memory
 advantage.
 
 ---

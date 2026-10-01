@@ -19,6 +19,10 @@ cmake --build build --parallel
 
 # Full benchmark (writes CSVs to benchmarks/results/)
 ./build/benchmark
+
+# Tests — run after any change to a sampler, the Python engine, or calibrate.py
+./build/test_samplers      # or: ctest --test-dir build
+uv run pytest tests/
 ```
 
 ## Data & Calibration
@@ -144,7 +148,7 @@ Fitted complexity constants (log-log regression over N = {252, 500, 1000}, curre
 - rSVD k=32: `t = 3.6e-4 · N^1.02`
 - σ_payoff ≈ 61 → SE ≈ 0.6 at M=10k. plot_sensitivity.py uses common random numbers (one seed for all cells).
 
-Memory notes: the "L3 = 16 MB" constant in benchmark.cpp / plot scripts is really the M2 P-cluster L2 (M2 has no L3). `peak_rss_mb` is an RSS delta after return (not a peak; can be 0). `est_bandwidth_GBs` = lower-triangle bytes × M / wall time — an effective rate, not DRAM traffic (L fits in L2 at N ≤ 1000).
+Memory notes: the "L3 = 16 MB" constant in benchmark.cpp / plot scripts is really the M2 P-cluster L2 (M2 has no L3). `measured_peak_mb` is a true lifetime peak (forked child, `wait4` ru_maxrss minus an idle child); it replaced the old meaningless `peak_rss_mb`. `est_bandwidth_GBs` = lower-triangle bytes × M / wall time — an effective rate, not DRAM traffic (L fits in L2 at N ≤ 1000).
 
 ## Project Evaluation Criteria
 

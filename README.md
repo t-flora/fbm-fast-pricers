@@ -38,6 +38,11 @@ cmake --build build --parallel
 
 # Plots from the benchmark CSVs
 uv run python plots/plot_scaling.py
+
+# Tests (~5 s): sampler covariances, FFT eigenvalue closed form, rSVD vs optimum,
+# Cholesky/FFT price agreement, calibration recovery
+./build/test_samplers          # or: ctest --test-dir build
+uv run pytest tests/
 ```
 
 To run everything end to end (build, benchmark, all analysis scripts), use the pipeline script. It snapshots every figure and CSV into `plots/runs/<timestamp>/` with a manifest:
@@ -49,8 +54,6 @@ To run everything end to end (build, benchmark, all analysis scripts), use the p
 ```
 
 All Python scripts write figures to `plots/figures/`. The PNGs committed directly under `plots/` are snapshots of those outputs.
-
-> `benchmark` uses the macOS `mach` API for RSS measurement, so it builds only on macOS as written.
 
 ---
 
@@ -159,13 +162,13 @@ FFT's theoretical $\log N$ factor is invisible here. Over a $4\times$ range in $
 | Method ($N = 1000$) | Resident during MC loop | Notes |
 |---|---|---|
 | Cholesky | $8N^2 = 7.6$ MB | One matrix: $L$ overwrites $C$ in place (only its lower half is read per path) |
-| FFT | $\approx 0.13$ MB | Four length-$2N$ complex buffers |
+| FFT | $\approx 0.08$ MB | $2N$ scale factors and two length-$2N$ complex FFT buffers |
 | rSVD, $C$ held | 7.6 MB + $L_k$ | |
 | rSVD, $C$ freed | 0.24 MB | $L_k$ only ($8Nk$ bytes) |
 
 The relevant cache on the M2 is the 16 MB L2 shared by the performance cores; the M2 has no L3. $L$ fits in that L2 for all $N \leq 1000$. The `est_bandwidth_GBs` column (14, 24, and 35 GB/s for the three $N$) is $4N(N+1) M$ bytes (the lower triangle of $L$, once per path) divided by wall time. It is an effective rate for streaming $L$, **not** measured DRAM traffic, so it does not by itself show that Cholesky is DRAM-bound at these sizes.
 
-The `peak_rss_mb` column is the RSS change across a call. Buffers are freed before the function returns, so it reflects allocator retention rather than true peak usage, and it can read 0. Use `theoretical_peak_mb`.
+The `measured_peak_mb` column is a true lifetime peak: each method runs once in a forked child process, and the benchmark reads the child's peak RSS (via `wait4`) minus that of an idle child. At $N = 1000$ it gives 11.0 MB for Cholesky, 0.5 MB for FFT, and 14.0 / 10.7 MB for rSVD with $C$ held / freed. These exceed the dominant-array sizes because of allocator and matrix-multiply workspace. Freeing $C$ shrinks what is resident during the MC loop but not the lifetime peak, since $C$ must exist while $L_k$ is built.
 
 ### Accuracy of the low-rank sampler
 
@@ -248,7 +251,8 @@ data/              calibrate.py, rfsv_model.py (numpy engine), validate_*.py, pr
 plots/             plot_scaling.py, plot_structure.py, plot_sensitivity.py; figures/ (generated)
 report-files/      LaTeX report (main.tex + sec*.tex)
 ALGORITHMS.md      Line-by-line walkthrough of the C++ samplers
-run_pipeline.sh    Build + benchmark + every analysis script, snapshotted per run
+tests/             test_samplers.cpp (C++, via ctest) and test_python.py (pytest)
+run_pipeline.sh    Build + tests + benchmark + every analysis script, snapshotted per run
 ```
 
 Each sampler is a header-only `.hpp` with `inline` functions, so `benchmark.cpp` can include all three in one translation unit. `dataflow.svg` shows how the pieces connect (regenerate with `d2 dataflow.d2 dataflow.svg`).
