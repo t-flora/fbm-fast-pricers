@@ -1,0 +1,83 @@
+\documentclass{article}
+
+% Uncomment for final submission:
+% \usepackage[final]{aaj2026}
+
+\bibliographystyle{plainnat}
+\usepackage[numbers]{natbib}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+\urlstyle{same}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{mathtools}
+\usepackage{graphicx}
+\graphicspath{{../plots/figures/}}
+
+\title{Fast Monte Carlo Pricing of Asian Options under Rough Fractional Stochastic Volatility}
+
+\author{%
+  Tiago Flora \\
+  Department of Mathematics \\
+  University of Chicago \\
+  \texttt{tflora@uchicago.edu}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We study Monte Carlo pricing of a fixed-strike arithmetic Asian call option under the
+Rough Fractional Stochastic Volatility (RFSV) model~\citep{gatheral2018volatility},
+in which log-volatility follows a fractional Brownian motion with Hurst exponent
+$H = 0.10$.  The non-Markovian structure of fBM forces every sample path to be drawn
+from a dense $N \times N$ Gaussian distribution, requiring an $O(N^3)$ Cholesky setup
+and an $O(MN^2)$ per-path simulation cost.  We implement and benchmark an exact dense
+Cholesky baseline against two algorithms that exploit structure in the covariance
+matrix: a circulant-embedding FFT method ($O(N \log N)$ per path, exploiting the
+stationarity of fBM increments), and a global randomized SVD method ($O(Nk)$ per
+path, exploiting low-rank structure).  We show that the circulant embedding is exact
+for every $H \leq \nicefrac{1}{2}$, with smallest eigenvalue
+$\Delta t^{2H}(N^{2H} - (N-1)^{2H})$ in closed form.  Over
+$N \in \{252, 500, 1000\}$ the Cholesky and FFT costs scale as $N^{1.33}$ and
+$N^{0.95}$, but at $N = 1000$ the FFT method is only $\approx 9\%$ faster than a
+triangular Cholesky baseline, because random number generation rather than the
+covariance factor dominates its per-path cost.  The rank-32 rSVD method is
+$2.7\times$ faster than Cholesky at $N = 1000$, but its covariance error decays
+slowly, from $1.9\%$ at $k = 32$ to $1.2\%$ at $k = 128$, because the rough kernel's
+singularity lies on the diagonal, where a global low-rank approximation cannot
+isolate it.
+\end{abstract}
+
+\input{sec1-intro}
+\input{sec2-foundations}
+\input{sec3-algorithms}
+\input{sec4-implementation}
+\input{sec5-benchmarks}
+\input{sec6-validation}
+\input{sec7-futurework}
+
+\medskip
+
+\bibliography{bibliography}
+
+\appendix
+\section*{Reproducibility}
+All source code, benchmark scripts, and plotting code are available at
+\url{https://github.com/t-flora/fbm-fast-pricers}.  Results can be reproduced
+end-to-end by running \texttt{./run\_pipeline.sh} from the project root.  A manifest
+recording the git commit, parameters, and wall time is written to
+\texttt{plots/runs/\textit{TIMESTAMP}/manifest.txt} for each run.
+
+\section*{Acknowledgements}
+Portions of this report were drafted and edited with the assistance of Claude Sonnet 4.6
+(Anthropic, 2026), Claude Opus 5.5 (Anthropic, 2026), and Gemini 3.1 Pro (Google, 2026).
+
+\end{document}

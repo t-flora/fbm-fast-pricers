@@ -1,0 +1,125 @@
+\section{Future work}
+\label{sec:futurework}
+
+The three algorithms implemented here exploit three structural properties of
+the fBM covariance matrix: positive-definiteness (Cholesky), stationarity of
+increments (circulant FFT), and smooth off-diagonal low-rank structure (global
+rSVD).
+
+\subsection{True hierarchical H-matrix}
+\label{sec:hmatrix-future}
+
+The global rSVD (Algorithm~3) approximates the entire $N \times N$
+matrix $C$ at rank $k$.  This forces the rank budget to cover both the
+smooth far-off-diagonal region and the singular near-diagonal region, where
+$C(t,s) \sim |t-s|^{2H}$ with $H = 0.10$ is Hölder-$0.2$ continuous and
+barely above $C^0$ regularity.  The global approximation cannot specialize, which is
+why the spectrum of the full matrix decays slowly at small $H$ even though its
+off-diagonal block compresses to rank $\leq 3$ (Figure~\ref{fig:structure}(d)).
+
+A true hierarchical H-matrix separates these concerns by a recursive
+block-tree decomposition of $C$ \citep{hackbusch2015hierarchical,
+bebendorf2008hierarchical}.  At each level of the tree:
+\begin{itemize}
+  \item Near-diagonal blocks (time intervals that overlap or touch)
+        are stored dense.  The near-diagonal singularity is not low-rank, so
+        no rank budget is wasted trying to compress it.
+  \item Far-off-diagonal blocks (well-separated time intervals) lie
+        entirely in the smooth region $t \neq s$ and are approximated at low
+        rank proportional to the distance from the diagonal.
+\end{itemize}
+The result is an H-Cholesky factorization with $O(Nk\log N)$ construction
+cost and $O(Nk\log N)$ per-path cost (H-matrix triangular solve traverses
+the block tree), versus the global rSVD's $O(Nk)$ per-path cost.  The
+H-matrix advantage lies in construction: $O(Nk\log N)$ vs $O(N^2 k)$ for the
+global rSVD sketch, a factor of $N/\log N$ for $k \ll N$.
+
+For the rough case $H = 0.10$, the off-diagonal block needs rank $3$ rather than
+$2$ for $1\%$ accuracy (Figure~\ref{fig:structure}(d)): slightly more than at
+$H = 0.50$, but far below the ranks the global approximation uses.  The H-matrix
+benefit over the global rSVD grows as $N$ increases beyond the current test range.  At $N = 252$,
+$O(N^2 k) = O(252^2 \cdot 64) \approx 4 \times 10^6$ flops for construction;
+the H-matrix would reduce this by roughly $\log_2 252 \approx 8$ for equal
+per-block rank, which becomes worthwhile at $N \geq 1000$.
+
+\subsection{Hybrid Scheme for rough Bergomi}
+\label{sec:hybrid-future}
+
+The Hybrid Scheme of \citet{bennedsen2017hybrid} achieves more than $80\%$
+RMSE reduction over naïve Euler discretization at $O(N \log N)$ cost by
+exploiting the separability of the Volterra kernel $K(t,s) = (t-s)^{H-1/2}$
+near $t = s$: the singular part is handled analytically and the smooth
+remainder is convolved via FFT.  This is a structurally superior simulation
+method for the rough Bergomi model of \citet{bayer2016pricing}, in
+which log-volatility is a Volterra integral $\int_0^t (t-s)^{H-1/2}\,dW_s$.
+
+The RFSV model studied here uses a different representation: $\log\sigma_t =
+\nu W_t^H$, where $W_t^H$ is a standard fBM (not a Volterra integral with
+the Bergomi kernel).  The two models are different processes with different
+correlation structures, though both have Hurst exponent $H$ controlling
+roughness.  Adopting the Hybrid Scheme would require switching to the rough
+Bergomi model class, which has distinct option pricing properties and
+calibration procedures.  The structural insight of separating the kernel into
+a singular analytic part and a smooth FFT-able remainder is directly
+relevant to the fBM kernel $C(t,s)$ and motivates the hierarchical treatment
+in §\ref{sec:hmatrix-future}.
+
+\subsection{Variance-normalised roughness premium}
+\label{sec:variancenorm}
+
+The roughness premium in §\ref{sec:levy} is computed as
+$\hat{p}(H{=}0.10) - \hat{p}(H{=}0.50)$ at fixed $\nu = 0.30$.  At fixed
+$\nu$, the total integrated variance
+\begin{equation}
+  \mathbb{E}\!\left[\int_0^T \sigma_t^2\,dt\right]
+  = \int_0^T e^{2\nu^2 t^{2H}}\,dt
+\end{equation}
+depends on $H$: rougher paths (smaller $H$) have larger integrated variance
+because $t^{2H} > t$ on $(0,1)$ when $H < \nicefrac{1}{2}$.  The
+premium therefore conflates two effects: path regularity and total variance.
+
+A variance-normalised comparison holds integrated variance constant by
+adjusting $\nu$ as a function of $H$.  To leading order, matching the
+short-time variance gives
+\begin{equation}
+  \nu(H) = \nu_0\sqrt{\frac{2H+1}{2}\,T^{1-2H}},
+\end{equation}
+with $\nu_0$ fixed at the Brownian reference ($H = \nicefrac{1}{2}$).
+Running §\ref{sec:levy} with $\nu(H)$ rather than fixed $\nu$ would isolate
+the pure roughness effect, resolving the confound noted in
+§\ref{sec:levy}.
+
+\subsection{Spot-volatility correlation}
+\label{sec:rho-future}
+
+The engine draws the price shocks $Z$ independently of the fBM driving
+volatility, so the spot-vol correlation is $\rho = 0$.  As §\ref{sec:iv} shows,
+this leaves the model unable to produce the downward skew of equity smiles.
+Introducing $\rho \neq 0$ requires simulating $W^H$ jointly with the Brownian motion
+that drives the price.  The dense Cholesky sampler can absorb this directly by
+factoring the $2N \times 2N$ joint covariance, which is explicit when $W^H$ is
+written as a Volterra integral of that Brownian motion; the circulant embedding
+would need to be extended to the joint process.  This is the single change most
+needed before the IV comparison can test the model rather than its
+simplifications.
+
+\subsection{Quasi-Monte Carlo path generation}
+\label{sec:qmc-future}
+
+All three algorithms use pseudo-random Gaussian draws, giving a standard MC
+error of $O(M^{-1/2})$.  Replacing these with low-discrepancy sequences
+\citep{niederreiter1992random} reduces the effective error rate to
+approximately $O(M^{-1}(\log M)^N)$, close to $O(M^{-1})$ in practice
+\citep{glasserman2004monte}.  This improvement is orthogonal to the
+choice of covariance simulation method: any of the three algorithms can be
+combined with QMC by replacing the standard normal draws.
+
+In $N = 252$ dimensions the low-discrepancy property is strongest for the
+first few coordinates.  Brownian bridge dimension ordering concentrates the
+largest variance components in the lowest-index dimensions, ensuring the
+low-discrepancy sequence acts on the high-information components first
+\citep{joy1996quasi}.  At $M = 10{,}000$, the MC standard error of
+$\approx 0.6$ (§\ref{sec:convergence}) would fall to $\approx 0.006$ under
+ideal $O(M^{-1})$ QMC, a $100\times$ reduction at no additional computational
+cost, improving the statistical resolution of the roughness premium and
+parameter sensitivity results.

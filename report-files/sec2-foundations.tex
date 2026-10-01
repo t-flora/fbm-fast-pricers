@@ -1,0 +1,161 @@
+\section{Mathematical Foundations}
+\label{sec:foundations}
+
+\subsection{Fractional Brownian motion and its covariance structure}
+
+Fractional Brownian motion $W_t^H$ is the unique (up to scaling) continuous Gaussian
+process with stationary increments and the self-similarity property
+$W_{ct}^H \stackrel{d}{=} c^H W_t^H$ for all $c > 0$
+\citep{mandelbrot1968fractional}.  Its covariance kernel is
+\begin{equation}
+  \label{eq:fbm-cov}
+  \mathbb{E}[W_t^H W_s^H]
+  = \tfrac{1}{2}\!\left(t^{2H} + s^{2H} - |t-s|^{2H}\right),
+\end{equation}
+which is symmetric, positive-definite for $H \in (0,1)$, and reduces to the standard
+Brownian covariance $\min(t,s)$ at $H = \nicefrac{1}{2}$.  The self-similarity
+$W_{ct}^H \stackrel{d}{=} c^H W_t^H$ and the stationarity of increments
+$W_{t+h}^H - W_t^H \stackrel{d}{=} W_h^H$ are the properties that make fBM a
+tractable model of rough volatility; §\ref{sec:toeplitz} exploits increment
+stationarity directly.  The critical property for simulation is that fBM is
+non-Markovian for $H \neq \nicefrac{1}{2}$: the value of $W_t^H$ depends on
+the entire history of the driving noise, not just its most recent value.  This rules
+out any forward recursion and forces each sample path to be drawn from a joint
+$N$-dimensional Gaussian.
+
+Discretizing $[0,T]$ into $N$ equally spaced points $t_j = jT/N$ yields an $N\times N$
+covariance matrix $C$ with $C_{jk} = \mathbb{E}[W_{t_j}^H W_{t_k}^H]$ as in
+equation~\eqref{eq:fbm-cov}.  The matrix $C$ is dense (every pair of time points is correlated) and positive-definite
+for all $H \in (0,1)$ and $N \geq 1$.  This density explains the $O(N^2)$ per-path
+cost: sampling from
+$\mathcal{N}(0,\nu^2 C)$ by any exact method requires touching all $N^2/2$ entries
+of $C$.  Algorithm~1 (§\ref{sec:cholesky}) accepts this cost and factorizes $C$
+exactly; Algorithms~2 and~3 avoid it by exploiting structure that $C$ possesses.
+
+\subsection{Stationarity of fGn and the Toeplitz property}
+\label{sec:toeplitz}
+
+Although the fBM covariance matrix is dense, its increment process has a
+crucial structural simplification.  Define the fractional Gaussian noise (fGn)
+increments $\delta W_m = W_{(m+1)\Delta t}^H - W_{m\Delta t}^H$ for $m = 0, \ldots,
+N-1$, where $\Delta t = T/N$.  Stationarity of fBM increments implies
+\begin{equation}
+  \label{eq:fgn-cov}
+  \gamma(k) \coloneqq \mathrm{Cov}(\delta W_m,\, \delta W_{m+k})
+  = \frac{\Delta t^{2H}}{2}\bigl(|k+1|^{2H} + |k-1|^{2H} - 2|k|^{2H}\bigr),
+\end{equation}
+which depends only on the lag $k = |m - n|$, not on the absolute index $m$
+\citep{wood1994simulation}.  The $N\times N$ covariance matrix of
+$(\delta W_0, \ldots, \delta W_{N-1})$ is therefore Toeplitz: its $(m,n)$
+entry equals $\gamma(|m-n|)$, so every diagonal is constant.
+
+Figure~\ref{fig:structure} illustrates the contrast.  Panels~(a) and~(b) show the
+$N\times N$ covariance heatmaps of fBM and fGn respectively.  The fBM matrix is not
+Toeplitz: row $m$ of $C$ varies with $m$ because the variance $t_m^{2H}$ grows with
+time.  The fGn matrix has constant diagonals, confirming the Toeplitz property exactly.
+Panel~(c) shows diagonal slices $C[m, m+k]$ vs.\ lag $k$ for two different rows
+$m$: the fGn curves overlap to numerical precision, while the fBM curves diverge.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{structure_analysis.png}
+  \caption{Structural properties of the fBM and fGn covariance matrices ($H=0.10$).
+    \textbf{(a)} fBM covariance $C(t_m, t_n)$: dense, not Toeplitz (variance grows
+    with time).
+    \textbf{(b)} fGn covariance $\gamma(|m-n|)$: Toeplitz (constant diagonals).
+    \textbf{(c)} Diagonal slice $C[m, m+k]$ vs.\ lag $k$: fGn rows for $m=0$ and
+    $m=N/4$ overlap (Toeplitz); fBM rows diverge (non-stationary).
+    \textbf{(d)} Normalised singular values $\sigma_k/\sigma_1$ of the off-diagonal
+    block (solid) and normalised eigenvalues of the full matrix $C$ (dashed) at
+    $H=0.10$ and $H=0.50$.  The off-diagonal block compresses to rank $\leq 3$ at
+    both $H$; the full spectrum decays slowly, most slowly at $H=0.10$.
+    Controlled: $H=0.10$, $N=64$ (heatmaps), $N=128$ (SVD).
+    Independent: process type or Hurst exponent.
+    Dependent: covariance pattern and singular value magnitude.}
+  \label{fig:structure}
+\end{figure}
+
+Algorithm~2 (§\ref{sec:fft}) depends on this Toeplitz structure: only Toeplitz
+matrices embed into a circulant diagonalizable by the discrete Fourier transform.
+Applying the FFT method directly to the fBM covariance matrix 
+produces negative eigenvalues and pathological path output.
+
+\subsection{Circulant embedding and its positivity condition}
+\label{sec:circulant}
+
+A Toeplitz matrix $T$ with first row $(\gamma(0), \gamma(1), \ldots, \gamma(N-1))$
+can be embedded into a $2N\times 2N$ circulant matrix $C_\mathrm{circ}$ whose
+first row is the symmetric extension
+\begin{equation}
+  c = \bigl(\gamma(0),\, \gamma(1),\, \ldots,\, \gamma(N-1),\, 0,\,
+             \gamma(N-1),\, \ldots,\, \gamma(1)\bigr).
+\end{equation}
+Circulant matrices are diagonalized by the DFT: the eigenvalues of $C_\mathrm{circ}$
+are exactly $\lambda = \mathrm{FFT}(c)$, computable in $O(N\log N)$ operations.
+To sample, draw $W = a + ib$ with $a, b \sim \mathcal{N}(0, I_{2N})$ independent
+(so each component has real and imaginary parts that are independent standard
+normals),
+scale component-wise by $\sqrt{\lambda_j / (2N)}$, apply the inverse FFT, and take
+the real part of the first $N$ elements \citep{davies1987tests}.  One forward FFT (once per experiment) to compute
+$\{\lambda_j\}$, then one inverse FFT per path: total $O(N\log N)$ per path.
+
+The method is valid only if every eigenvalue $\lambda_j$ is non-negative, so that
+$\sqrt{\lambda_j}$ is real \citep{wood1994simulation}.  For rough $H$ this holds at
+every $N$, not just asymptotically.  \citet{craigmile2003simulating} proves that the
+Davies--Harte embedding is non-negative definite for any stationary process whose
+autocovariance is non-positive at all non-zero lags, a class that includes fGn with
+$H < \nicefrac{1}{2}$.  The argument is short enough to give in full for the
+embedding used here.  Because $x \mapsto x^{2H}$ is concave for $H < \nicefrac{1}{2}$,
+the second difference in equation~\eqref{eq:fgn-cov} is negative, so $\gamma(k) < 0$
+for every $k \geq 1$.  The eigenvalues of the symmetric circulant are
+\begin{equation}
+  \lambda_j = \gamma(0) + 2\sum_{k=1}^{N-1} \gamma(k)\cos\!\left(\frac{\pi jk}{N}\right),
+  \qquad j = 0, \ldots, 2N-1,
+\end{equation}
+and because each $\gamma(k)$ is negative, replacing every cosine by $1$ can only lower
+the sum.  The smallest eigenvalue is therefore $\lambda_0$, and the sum telescopes:
+\begin{equation}
+  \label{eq:lambda-min}
+  \begin{split}
+  \lambda_{\min} = \lambda_0
+    &= \gamma(0) + 2\sum_{k=1}^{N-1}\gamma(k) \\
+    &= \Delta t^{2H}\bigl(N^{2H} - (N-1)^{2H}\bigr)
+     \approx 2H\,\Delta t^{2H} N^{2H-1} > 0.
+  \end{split}
+\end{equation}
+The FFT method is thus exact on the grid for every $H \leq \nicefrac{1}{2}$ (at
+$H = \nicefrac{1}{2}$ the increments are white noise and every $\lambda_j = \gamma(0)$).
+The C++ pricer checks the sign of every eigenvalue and throws rather than clipping.
+
+Equation~\eqref{eq:lambda-min} also shows that the margin is thin.  Relative to the
+increment variance $\gamma(0) = \Delta t^{2H}$, the smallest eigenvalue is
+$N^{2H} - (N-1)^{2H}$: $0.24\%$ at $H = 0.10$, $N = 252$ and $0.08\%$ at $N = 1000$,
+decaying like $N^{-(1-2H)}$.  This mirrors the fGn spectral density, which vanishes
+at zero frequency when $H < \nicefrac{1}{2}$.  Section~\ref{sec:stability} confirms
+the formula numerically.  The key pitfall is $\gamma(0)$ itself: dropping the
+$|k-1|^{2H}$ term at $k = 0$ halves it, which breaks the bound and spuriously makes
+$28\%$ of the eigenvalues negative at $H = 0.10$.  An earlier version of my
+stability analysis made exactly this mistake and concluded, wrongly, that the FFT
+method needed eigenvalue clipping.
+
+\subsection{Low-rank structure of smooth off-diagonal blocks}
+\label{sec:lowrank}
+
+The fBM kernel $C(t,s) = \tfrac{1}{2}(t^{2H}+s^{2H}-|t-s|^{2H})$ has a singularity at $t = s$, 
+since the term $|t-s|^{2H}$ introduces one. For $H = 0.10$ this gives $|t-s|^{0.2}$, whose derivative
+$0.2|t-s|^{-0.8}$ is unbounded as $t \to s$. The function is H\"older-continuous
+with exponent $0.2$ but strictly non-differentiable on the diagonal.
+
+Off-diagonal blocks of $C$ (submatrices coupling two disjoint time intervals) lie
+in the smooth region $t \neq s$.  Smooth bivariate kernels generate matrices with
+rapidly decaying singular values on such blocks \citep{candes2009fast}.
+
+Figure~\ref{fig:structure}(d) confirms this, and locates the difficulty precisely.
+The off-diagonal block coupling the first half of the grid to the second half is
+exactly rank~1 at $H = 0.50$, where the kernel is $\min(t,s)$.  At $H = 0.10$ its
+singular values still fall geometrically: below $1\%$ of $\sigma_1$ by rank $k = 3$
+and below $10^{-4}$ by $k = 5$.  The spectrum of the full matrix $C$ behaves very
+differently.  It decays only algebraically, and more slowly at $H = 0.10$ than at
+$H = 0.50$.  The slow decay that limits a global low-rank approximation therefore
+comes from the near-diagonal singularity, not from the far field.  This is exactly
+the structure a hierarchical matrix exploits (§\ref{sec:hmatrix-future}).

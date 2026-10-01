@@ -1,0 +1,203 @@
+\section{Implementation Notes}
+\label{sec:implementation}
+
+This section documents the non-obvious design decisions in the C++ codebase
+that are not fully captured by the complexity table in §\ref{sec:algorithms}.
+
+\subsection{fGn autocovariance, not fBM covariance}
+\label{sec:fgn-choice}
+
+The circulant embedding requires a stationary covariance sequence.
+fBM itself is non-stationary: the variance $\mathbb{E}[(W_t^H)^2] = t^{2H}$
+grows with $t$, so row $i$ of the fBM covariance matrix $C$ is different from
+row $j \neq i$.  Attempting to embed $C$ into a circulant and taking the FFT
+produces a mix of positive and negative eigenvalues even for $H = \nicefrac{1}{2}$;
+the method collapses entirely.
+
+The correct input is the fGn autocovariance $\gamma(k)$ of increments
+(§\ref{sec:toeplitz}):
+\begin{equation}
+  \gamma(k)
+  = \tfrac{\Delta t^{2H}}{2}\bigl((k{+}1)^{2H} + (k{-}1)^{2H} - 2k^{2H}\bigr),
+\end{equation}
+which depends only on lag $k$.  The pricer uses the fGn autocovariance to
+build the symmetric circulant first row
+$c = (\gamma(0), \ldots, \gamma(N{-}1), 0, \gamma(N{-}1), \ldots, \gamma(1))$
+and then cumsums the resulting fGn increments back into fBM log-volatility.
+The bug is silent: the program runs and produces plausible-looking paths, just
+with the wrong covariance structure.
+
+\subsection{FFTW plan creation and reuse}
+\label{sec:fftw-plans}
+
+FFTW separates plan creation (analyzing the transform size and
+selecting an algorithm) from execution \citep{frigo2005design}.
+The implementation creates two plans once before the Monte Carlo loop:
+
+\begin{enumerate}
+  \item A forward $c2c$ plan of length $M = 2N$ to compute the circulant
+        eigenvalues from the first row $c$.  This plan is executed once and
+        immediately destroyed.
+  \item A backward $c2c$ plan (\texttt{FFTW\_BACKWARD}) of length $M = 2N$
+        to synthesise fGn increments per path.  This plan is reused across
+        all $M_\mathrm{paths}$ calls to \texttt{fftw\_execute}.
+\end{enumerate}
+
+I used full complex-to-complex ($c2c$) transforms rather than the real-input
+variants (\texttt{r2c}/\texttt{c2r}).  The Hermitian-symmetry bookkeeping
+required for the latter, combined with the phase adjustments in the synthesis
+step, introduces enough notation to obscure the algorithm; $c2c$ keeps the
+implementation transparent at negligible memory cost ($2N$ vs $N{+}1$ complex
+words for the eigenvalue array).
+
+Both plans use \texttt{FFTW\_ESTIMATE}, which skips empirical tuning.  A
+production deployment could substitute \texttt{FFTW\_MEASURE} or persist a
+wisdom file (§\ref{sec:opt-opportunities}) for repeated calls at the same $N$.
+
+\subsection{\texttt{std::complex<double>} and the FFTW ABI}
+\label{sec:complex-cast}
+
+A note for the interested reader / C++ developer: FFTW's C interface expects \texttt{fftw\_complex*}, which is
+\texttt{double[2]}.  I allocate \texttt{std::vector<std::complex<double>>}
+and pass a \texttt{reinterpret\_cast<fftw\_complex*>} of its data pointer.
+This cast is valid, as the C++11 standard mandates that \texttt{complex<double>}
+has the same memory layout as \texttt{double[2]}, with the real part first,
+making the two representations ABI-compatible.  Using \texttt{std::vector}
+rather than a raw FFTW-allocated array lets RAII manage the buffer lifetime
+without a manual \texttt{fftw\_free}.
+
+\subsection{FFT normalization convention}
+\label{sec:normalization}
+
+FFTW's backward transform is unnormalized: the output of
+\texttt{fftw\_execute} on a length-$M$ array equals $M$ times the true
+inverse DFT.  To obtain fGn increments with the correct covariance structure,
+the per-component scaling factor is
+\begin{equation}
+  s_j = \sqrt{\lambda_j / M}, \qquad M = 2N,
+\end{equation}
+not $\sqrt{\lambda_j}$.  Applying the unnormalized backward transform to the
+scaled vector $w_j = s_j(a_j + ib_j)$ (with $a_j, b_j \overset{iid}{\sim}
+\mathcal{N}(0,1)$) then yields $\mathrm{Re}(\mathrm{IFFT}(w))_{0:N}$ with
+covariance $\gamma(|i-j|)$, as required.
+
+\subsection{Randomized SVD: subspace iteration}
+\label{sec:poweriter}
+
+The rSVD implementation (\texttt{rsvd.hpp}) draws a Gaussian test matrix
+$\Omega \in \mathbb{R}^{N \times (k+p)}$ with oversampling $p = 5$ and
+orthonormalizes the sketch, $Q = \mathrm{orth}(C\Omega)$.  It then applies $q = 2$
+rounds of subspace iteration,
+\begin{equation}
+  Q \leftarrow \mathrm{orth}\bigl(C\,\mathrm{orth}(C^\top Q)\bigr),
+  \qquad q = 2 \text{ times},
+\end{equation}
+where $\mathrm{orth}(\cdot)$ is a thin Householder QR.  This is Algorithm~4.4 of
+\citet{halko2011finding}.  The QR after every product is what separates it from
+the plain power iteration of their Algorithm~4.3.
+
+Re-orthonormalizing is necessary here, not cosmetic.  Without it, the columns of
+$(CC^\top)^q C\Omega$ are scaled by singular values raised to the power $2q+1 = 5$.
+At $N = 500$, $k = 128$ the ratio $(\sigma_1/\sigma_{k+p})^5$ is
+$\approx 2 \times 10^{15}$, at the limit of double precision, so the directions the
+sketch is meant to capture are at risk of being lost to roundoff.  An earlier
+version of my code used Algorithm~4.3.  Switching changed the Frobenius errors by
+less than $0.02\%$ (relative) at the ranks tested, but it removes a failure mode at
+larger $k$ or $N$.  With subspace iteration, the Frobenius error at every rank is
+within about $2\%$ (relative) of the optimal Eckart--Young truncation computed from
+the exact eigendecomposition.  The slow error decay in §\ref{sec:errorrank} is
+therefore a property of $C$, not of the randomized algorithm.
+
+\subsection{In-place Cholesky and the triangular mat-vec}
+\label{sec:cholesky-impl}
+
+The per-path product $\nu Lz$ needs to touch only the $N(N+1)/2$ non-zero entries
+of $L$.  My first implementation copied $L$ out of \texttt{Eigen::LLT} into a dense
+\texttt{MatrixXd} and computed \texttt{L * z}.  That is a general mat-vec which also
+multiplies the zero upper triangle: $2N^2$ flops instead of $N^2$, and twice the
+bytes read per path.  It also kept three $N \times N$ matrices alive during the
+Monte Carlo loop: $C$, the factorization's internal copy, and $L$.
+
+The current implementation factors in place, running \texttt{Eigen::LLT} on an
+\texttt{Eigen::Ref} to $C$ so that $L$ overwrites the lower triangle of $C$, and
+multiplies through a lower-triangular view of that storage
+(\texttt{triangularView<Lower>}).  In
+isolation at $N = 1000$, the triangular mat-vec takes $\approx 62\,\mu$s against
+$\approx 115\,\mu$s for the dense one.  End to end, the Cholesky run at $N = 1000$,
+$M = 10{,}000$ drops from $1.61$~s to $1.13$~s, and resident memory drops from
+$3 \times 7.6$~MB to $7.6$~MB.  Prices are unchanged to six significant figures,
+since the random draws and the arithmetic on the non-zero entries are the same.
+This correction matters for the comparison in §\ref{sec:timing}: against the
+dense baseline the FFT method looked $1.5\times$ faster at $N = 1000$, but against
+the fair one it is only $\approx 9\%$ faster.
+
+\subsection{Piecewise-constant volatility convention}
+\label{sec:volconv}
+
+All three pricers share a single GBM step kernel (\texttt{asian\_payoff.hpp}):
+\begin{equation}
+  S_i = S_{i-1}\exp\!\bigl((r - \tfrac{1}{2}\sigma_i^2)\,\Delta t
+        + \sigma_i\sqrt{\Delta t}\,Z_i\bigr),
+  \qquad \sigma_i = e^{\log\sigma[i]},
+\end{equation}
+where $\log\sigma[i] = \nu W_{t_i}^H$ is the fBM log-vol evaluated at the
+end of the $i$-th interval (right-endpoint convention), and
+$Z_i \overset{iid}{\sim} \mathcal{N}(0,1)$ is an independent Brownian
+increment for the price process. This departs from the standard
+Euler-Maruyama left-endpoint rule, which would use $\sigma_{i-1}$ (the
+volatility at the start of the interval).  The departure does not constitute
+a look-ahead bias in the causal sense: $W^H$ is pre-generated independently
+of the price process $S$, so using $\sigma_i$ does not introduce any
+dependence on future values of $S$.  It does introduce an $O(\Delta t)$
+discretization error relative to the left-endpoint rule, which at $N = 252$
+is negligible.  Using the same convention across all three pricers ensures
+that timing and price comparisons are not confounded by volatility
+discretization differences.
+
+\subsection{Header-only pricers and ODR}
+\label{sec:odr}
+
+Each algorithm lives entirely in a \texttt{.hpp}: \texttt{cholesky.hpp},
+\texttt{fft.hpp}, and \texttt{lowrank.hpp}.  Each \texttt{price()} function
+is marked \texttt{inline}:
+\begin{verbatim}
+namespace cholesky { inline double price(...) { ... } }
+\end{verbatim}
+\texttt{inline} permits the same function to be defined in multiple
+translation units; the linker deduplicates the definitions and keeps one
+copy in the final binary.  This allows \texttt{benchmark.cpp} to include all
+three headers in one translation unit without ODR violations, while each
+\texttt{\_pricer.cpp} standalone executable also includes its header and
+calls \texttt{price()} directly.
+
+\subsection{Optimization opportunities not implemented}
+\label{sec:opt-opportunities}
+
+Three straightforward improvements would accelerate the MC loop without
+algorithmic changes:
+
+\paragraph{Two fGn paths per inverse FFT}
+At $N = 1000$ the FFT pricer's per-path cost is dominated not by the transform but
+by random number generation.  In isolation, its $4N$ Gaussian draws (real and
+imaginary parts of $2N$ complex variates) take $\approx 60$--$70\,\mu$s, against
+$\approx 8\,\mu$s for the size-$2N$ inverse FFT.  The real and imaginary parts of
+the transformed vector each have exactly the fGn covariance, and their
+cross-covariance vanishes because $\lambda_j = \lambda_{2N-j}$; I confirmed both
+numerically to within Monte Carlo tolerance.  The pricer nevertheless discards the
+imaginary part.  Using both would halve the Gaussian draws per fBM path, which is
+the largest constant-factor saving available to Algorithm~2.
+
+\paragraph{OpenMP path-level parallelism}
+The outer \texttt{for(m)} loop over paths is embarrassingly parallel: each
+path reads only the shared, read-only factor $L$ (or $L_k$, or the FFTW
+eigenvalues) and accumulates independently.  A \texttt{\#pragma omp parallel
+for reduction(+:payoff\_sum)} decorator with thread-local RNG state would
+give near-linear multi-core scaling with no algorithmic changes.
+
+\paragraph{FFTW wisdom files}
+The current code uses \texttt{FFTW\_ESTIMATE}, which accepts the default
+transform plan.  For repeated calls at a fixed $N$ (e.g., in a calibration loop
+that prices the same contract many times), \texttt{FFTW\_MEASURE} or a
+pre-saved wisdom file would eliminate the one-time planning overhead by
+caching the optimal decomposition into FFT subproblems
+\citep{frigo2005design}.
