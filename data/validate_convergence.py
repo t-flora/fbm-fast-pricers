@@ -4,9 +4,9 @@ MC Convergence Study: price vs number of paths M.
 Answers: "How many paths are needed for the MC price to converge?"
 
 Experiment design:
-  Controlled:    N=252, H=0.10, nu=0.30, K=100, T=1, S0=100, r=0
+  Controlled:    N=252, H=0.10, nu=0.52, K=100, T=1, S0=100, r=0
   Independent:   M in {100, 250, 500, 1k, 2.5k, 5k, 10k, 25k}
-  Dependent:     mean price and MC std-error across 5 independent seeds
+  Dependent:     mean price and MC std-error across 20 independent seeds
 
 Two panels:
   (a) Price +/- 1sigma vs M on log x-axis
@@ -17,7 +17,7 @@ Output:
     plots/figures/convergence.png
 
 Usage:
-    uv run python data/validate_convergence.py [--n-seeds 5] [--max-M 25000]
+    uv run python data/validate_convergence.py [--n-seeds 20] [--max-M 25000]
 
 ──────────────────────────────────────────────────────────────────────────
 BEGINNER'S GUIDE
@@ -43,7 +43,7 @@ Estimating sigma_payoff:
   This is then used to draw the theoretical confidence bands in panel (a).
 
 Panel (b): why the fitted slope may differ from -0.5:
-  With only 5 seeds, the standard deviation estimate itself has high variance,
+  With few seeds, the standard deviation estimate itself has high variance,
   especially at small M (few samples from a heavy-tailed payoff distribution).
   This is expected and does not indicate a bug — it is a consequence of
   estimating a variance with 5 observations.  More seeds would tighten the fit.
@@ -64,33 +64,33 @@ from scipy.stats import linregress
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from data.rfsv_model import price_asian_call, simulate_log_vol_paths, _simulate_price_paths
+from data.params import H, NU, MU0, K, T, S0, R
 
 
 # ── Parameters ────────────────────────────────────────────────────────────────
-H   = 0.10
-NU  = 0.30
-K   = 100.0
-T   = 1.0
-S0  = 100.0
-R   = 0.0
 N   = 252
 
 M_VALUES = [100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000]
-BASE_SEEDS = [42, 142, 242, 342, 442]
+SEED_BASE = 1000      # replication seeds are SEED_BASE + s
+REF_SEED_BASE = 9000  # reference batches use their own seeds
+REF_M, REF_BATCH = 1_000_000, 50_000
 
 
-def _load_reference_price() -> float:
-    """Read reference price from benchmarks/results/reference_price.txt, or use known value."""
-    ref_path = os.path.join(os.path.dirname(__file__), "..",
-                            "benchmarks", "results", "reference_price.txt")
-    try:
-        with open(ref_path) as f:
-            for line in f:
-                if line.startswith("reference_price="):
-                    return float(line.split("=")[1])
-    except FileNotFoundError:
-        pass
-    return 23.58   # known value: avg of 500k-path Cholesky + FFT runs
+def _reference(n_paths: int = REF_M, batch: int = REF_BATCH) -> tuple[float, float, float]:
+    """
+    High-accuracy reference on the SAME grid as the study (N steps), from the same
+    engine: returns (price, standard error, sigma_payoff) over n_paths payoffs.
+    """
+    dt = T / N
+    payoffs = []
+    for b in range(n_paths // batch):
+        seed = REF_SEED_BASE + b
+        log_vol = simulate_log_vol_paths(N, batch, H, NU, dt, seed=seed) + MU0
+        paths = _simulate_price_paths(log_vol, S0, R, dt, seed=seed)
+        payoffs.append(np.exp(-R * T) * np.maximum(paths.mean(axis=1) - K, 0.0))
+    v = np.concatenate(payoffs)
+    sigma = float(np.std(v, ddof=1))
+    return float(v.mean()), sigma / np.sqrt(v.size), sigma
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -98,17 +98,18 @@ def _load_reference_price() -> float:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--n-seeds", type=int, default=5,
-                        help="Independent replications per M (default 5)")
+    parser.add_argument("--n-seeds", type=int, default=20,
+                        help="Independent replications per M (default 20)")
     parser.add_argument("--max-M", type=int, default=25_000,
                         help="Maximum M to include (default 25000)")
     args = parser.parse_args()
 
-    seeds = BASE_SEEDS[:args.n_seeds]
+    seeds = [SEED_BASE + s for s in range(args.n_seeds)]
     m_values = [m for m in M_VALUES if m <= args.max_M]
 
-    ref_price = _load_reference_price()
-    print(f"Reference price: {ref_price:.4f}")
+    ref_price, ref_se, sigma_payoff = _reference()
+    print(f"Reference price (N={N}, {REF_M:,} paths): {ref_price:.4f} ± {ref_se:.4f}")
+    print(f"sigma_payoff = {sigma_payoff:.2f}  (from the {REF_M:,} reference payoffs)")
     print(f"Running {len(m_values)} M-values × {len(seeds)} seeds …\n")
 
     # ── Collect results ───────────────────────────────────────────────────────
@@ -138,14 +139,6 @@ def main() -> None:
     mean_times  = np.array(mean_times)
     m_arr       = np.array(m_values, dtype=float)
 
-    # Estimate sigma_payoff directly from the M_max per-path payoffs of one run
-    # (same paths as price_asian_call with seeds[0]).
-    dt = T / N
-    log_vol = simulate_log_vol_paths(N, m_values[-1], H, NU, dt, seed=seeds[0])
-    paths = _simulate_price_paths(log_vol, S0, R, dt, seed=seeds[0] + 1)
-    payoffs = np.exp(-R * T) * np.maximum(paths.mean(axis=1) - K, 0.0)
-    sigma_payoff = float(np.std(payoffs, ddof=1))
-    print(f"\nEstimated sigma_payoff = {sigma_payoff:.4f}  (from {m_values[-1]:,} per-path payoffs)")
 
     # Log-log fit: log(std) = intercept + slope * log(M)
     # Under CLT, slope = -0.5 exactly.  Deviations are due to noisy std estimates
@@ -171,10 +164,10 @@ def main() -> None:
 
     ax1.fill_between(band_m, band_lo, band_hi, alpha=0.15, color="C0",
                      label=r"$\pm 2\,\hat{\sigma}_{\rm payoff}/\sqrt{M}$ band")
-    ax1.axhline(ref_price, color="k", ls="--", lw=1.2, label=f"Reference  {ref_price:.4f}")
+    ax1.axhline(ref_price, color="k", ls="--", lw=1.2, label=f"Reference (same N, {REF_M:,} paths)  {ref_price:.3f}")
     ax1.errorbar(m_arr, mean_prices, yerr=std_prices,
                  fmt="o-", color="C1", ms=5, capsize=4, lw=1.5,
-                 label=r"RFSV price $\pm 1\sigma$ (5 seeds)")
+                 label=rf"RFSV price $\pm 1\sigma$ ({len(seeds)} seeds)")
 
     ax1.set_xscale("log")
     ax1.set_xlabel("Paths $M$")

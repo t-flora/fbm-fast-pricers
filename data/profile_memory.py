@@ -24,12 +24,10 @@ import seaborn as sns
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from data.rfsv_model import simulate_log_vol_paths
+from data.params import H, NU, T
 
 sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
-H    = 0.10
-NU   = 0.30
-T    = 1.0
 
 # Hardware reference (Apple M2)
 L3_MB = 16.0  # Apple M2 P-cluster L2, the largest on-chip cache (M2 has no L3)

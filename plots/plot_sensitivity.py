@@ -9,7 +9,7 @@ Sweeps RFSV model parameters to show how Asian call prices depend on:
 Figures produced:
   1. sensitivity_surface.png -- 2-panel: heatmap price vs (H, nu) at ATM, and
      line plot price vs H for each nu.
-  2. sensitivity_strike.png  -- price vs K for each H value at fixed nu=0.30.
+  2. sensitivity_strike.png  -- price vs K for each H value at fixed nu = NU (0.52).
 
 Usage:
     uv run python plots/plot_sensitivity.py [--M 10000] [--N 252]
@@ -78,15 +78,13 @@ import seaborn as sns
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from data.rfsv_model import price_asian_call
+from data.params import NU, S0, T, R
 
 sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
-S0 = 100.0
-T  = 1.0
-R  = 0.0
 
 H_GRID  = np.array([0.05, 0.10, 0.15, 0.20, 0.30, 0.50])
-NU_GRID = np.array([0.10, 0.20, 0.30, 0.40])
+NU_GRID = np.array([0.10, 0.30, NU, 0.70])  # brackets the model value NU
 K_GRID  = np.array([80.0, 90.0, 100.0, 110.0, 120.0])
 
 
@@ -232,8 +230,8 @@ def main():
     plot_surface(H_GRID, NU_GRID, price_grid,
                  os.path.join(out_dir, "sensitivity_surface.png"), M=args.M)
 
-    # ── Strike sweep: K × H at nu=0.30 (calibrated) ─────────────────────────
-    NU_FIXED = 0.30
+    # ── Strike sweep: K × H at the model nu ─────────────────────────────────
+    NU_FIXED = NU
     print(f"\nComputing K × H sweep (nu={NU_FIXED}, M={args.M}, N={args.N}) ...")
     strike_results = run_strike_sweep(H_GRID, NU_FIXED, K_GRID, args.N, args.M)
 

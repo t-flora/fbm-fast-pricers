@@ -11,7 +11,7 @@ Steps:
   5. Convert RFSV prices to IVs via the same BS inversion
   6. Plot: market IV (scatter) vs RFSV IV (line) per expiration
 
-Caveat: RFSV is calibrated to SPX realized variance (H=0.10, nu=0.30).
+Caveat: RFSV parameters are SPX realized-variance estimates (H=0.10, nu=0.52, time in years).
 SPY is used here as the most liquid proxy; dividend effects are small on
 short-dated options and are ignored in this pedagogical comparison.
 
@@ -100,8 +100,7 @@ from data.rfsv_model import price_european_call, bs_call_price, bs_implied_vol
 sns.set_theme(style="whitegrid", context="paper", font_scale=1.3)
 
 # Calibrated RFSV parameters (from calibrate.py / params.hpp)
-H_CALIB = 0.10
-NU_CALIB = 0.30
+from data.params import H as H_CALIB, NU as NU_CALIB  # noqa: E402
 R = 0.0          # simplified: ignore risk-free rate for pedagogical clarity
 
 

@@ -93,9 +93,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
-H_DEFAULT  = 0.10
-NU_DEFAULT = 0.30
-T          = 1.0
+from data.params import H as H_DEFAULT, NU as NU_DEFAULT, T  # noqa: E402
 
 
 # ── Covariance helpers ────────────────────────────────────────────────────────
