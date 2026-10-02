@@ -23,6 +23,7 @@
 #include <fstream>
 #include <chrono>
 #include <vector>
+#include <algorithm>
 #include <cmath>
 #include <Eigen/Dense>
 #include <sys/resource.h>
@@ -65,6 +66,19 @@ static double measured_peak_mb(F f) {
 
 static constexpr int M_MEMORY = 100;  // paths per memory probe
 
+// Timings are the median of REPS repeats; every repeat uses the same seed, so the
+// price is identical and only the wall time varies.
+static constexpr int REPS = 3;
+template <class F>
+static auto median_run(F f) {
+    std::vector<decltype(f())> runs;
+    for (int i = 0; i < REPS; ++i) runs.push_back(f());
+    std::sort(runs.begin(), runs.end(), [](const auto& a, const auto& b) {
+        return a.t_construct + a.t_mc < b.t_construct + b.t_mc;
+    });
+    return runs[REPS / 2];
+}
+
 // Largest on-chip cache on the test machine: Apple M2 performance-cluster L2 = 16 MB
 // (`sysctl hw.perflevel0.l2cachesize`). The M2 has no L3; the name is kept for the CSV.
 static constexpr double L3_MB = 16.0;
@@ -74,7 +88,9 @@ static constexpr double BANDWIDTH_GBS = 100.0;
 int main() {
     using namespace params;
 
-    const std::vector<int> Ns    = {N_SMALL, N_MEDIUM, N_LARGE};
+    // 64x range in N: wide enough to see the log N factor, and N >= 2000 pushes the
+    // Cholesky factor (8 N^2 bytes) out of the 16 MB L2
+    const std::vector<int> Ns    = {64, 128, N_SMALL, N_MEDIUM, N_LARGE, 2000, 4000};
     const std::vector<int> ranks = {2, 4, 8, 16, 32, 64, 128};
 
     std::ofstream csv_time("benchmarks/results/time_vs_N.csv");
@@ -90,7 +106,7 @@ int main() {
         std::cout << "\n── N = " << N << " (M=" << M_PATHS << " paths) ──\n";
 
         // Cholesky: C is factored in place, so one N x N matrix (N^2 doubles) holds L
-        auto rc = cholesky::price_timed(N, M_PATHS);
+        auto rc = median_run([N] { return cholesky::price_timed(N, M_PATHS); });
         double peak_chol = measured_peak_mb([N] { cholesky::price_timed(N, M_MEMORY); });
         double t_chol = rc.t_construct + rc.t_mc;
         double theory_chol_mb = static_cast<double>(N) * N * 8.0 / (1024.0 * 1024.0);
@@ -109,7 +125,7 @@ int main() {
 
         // FFT: during MC the sampler holds the 2N scale factors (doubles) and two 2N complex
         // buffers for the inverse FFT: 2N * (8 + 16 + 16) bytes
-        auto rf = fft_pricer::price_timed(N, M_PATHS);
+        auto rf = median_run([N] { return fft_pricer::price_timed(N, M_PATHS); });
         double peak_fft = measured_peak_mb([N] { fft_pricer::price_timed(N, M_MEMORY); });
         double t_fft = rf.t_construct + rf.t_mc;
         double theory_fft_mb = static_cast<double>(N) * 2 * 40.0 / (1024.0 * 1024.0);
@@ -124,7 +140,7 @@ int main() {
 
         // rSVD (C held): peak = N x N covariance matrix (O(N^2)) + Lk (N x k)
         constexpr int RANK_K = 32;
-        auto rh = lowrank::price_timed(N, M_PATHS, RANK_K);
+        auto rh = median_run([N] { return lowrank::price_timed(N, M_PATHS, RANK_K); });
         double peak_hmat = measured_peak_mb([N] { lowrank::price_timed(N, M_MEMORY, RANK_K); });
         double t_hmat = rh.t_construct + rh.t_mc;
         double theory_hmat_mb = static_cast<double>(N) * N * 8.0 / (1024.0 * 1024.0);
@@ -138,7 +154,7 @@ int main() {
                   << "s  theory=" << theory_hmat_mb << " MB\n";
 
         // rSVD (C freed before MC): peak during MC = Lk only (N x k)
-        auto rhf = lowrank::price_freed_timed(N, M_PATHS, RANK_K);
+        auto rhf = median_run([N] { return lowrank::price_freed_timed(N, M_PATHS, RANK_K); });
         double peak_hmat_f = measured_peak_mb([N] { lowrank::price_freed_timed(N, M_MEMORY, RANK_K); });
         double t_hmat_f = rhf.t_construct + rhf.t_mc;
         // After C freed: only Lk (N * k doubles) remains
@@ -183,7 +199,10 @@ int main() {
     Eigen::MatrixXd C_full = build_fbm_cov_matrix(N_MEDIUM, H, T);
     double frob_C = C_full.norm();
 
-    std::cout << "\n── Error vs rank (N=" << N_MEDIUM << ", M=" << M_PATHS << ") ──\n";
+    // 100k paths per rank: with sigma_payoff ~ 9.5 the price SE is ~0.03, small enough
+    // to resolve the truncation bias of the low-rank sampler
+    constexpr int M_ERR = 100000;
+    std::cout << "\n── Error vs rank (N=" << N_MEDIUM << ", M=" << M_ERR << ") ──\n";
     std::cout << std::left << std::setw(8)  << "rank_k"
               << std::setw(12) << "frob_err%"
               << std::setw(12) << "|price_err|"
@@ -200,7 +219,7 @@ int main() {
         double t_construct = elapsed_s(t0);
 
         t0 = Clock::now();
-        double p_approx = lowrank::price(N_MEDIUM, M_PATHS, k, /*seed=*/42);
+        double p_approx = lowrank::price(N_MEDIUM, M_ERR, k, /*seed=*/42);
         double t_mc = elapsed_s(t0);
 
         double abs_err = std::abs(p_approx - p_ref);

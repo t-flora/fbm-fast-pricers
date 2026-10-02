@@ -44,6 +44,35 @@ def fit_power_law(Ns, times):
     return np.exp(intercept), slope, r ** 2
 
 
+def plot_per_path_cost(df: pd.DataFrame, out_path: str):
+    """
+    Monte Carlo time per path, divided by N, vs N.  An O(N) method is flat, O(N log N)
+    rises linearly on the log-x axis, and O(N^2) rises like N.  This separates the
+    log N factor that a single power-law exponent hides.
+    """
+    if "mc_time_s" not in df.columns:
+        print("  Skipping per-path cost plot (mc_time_s column missing).")
+        return
+    fig, ax = plt.subplots(figsize=(7.5, 5), constrained_layout=True)
+    for method, style in METHOD_STYLE.items():
+        sub = df[df["method"] == method].sort_values("N")
+        if sub.empty:
+            continue
+        per_path_ns = sub["mc_time_s"].values / sub["M_paths"].values / sub["N"].values * 1e9
+        ax.semilogx(sub["N"], per_path_ns, marker=style["marker"], color=style["color"],
+                    linewidth=2, markersize=7, label=style["label"])
+    ax.set_xlabel("Path resolution N")
+    ax.set_ylabel("MC time per path per time step (ns)")
+    ax.set_yscale("log")
+    ax.set_title("Per-path cost normalized by N\n"
+                 r"flat = $O(N)$,  rising linearly in $\log N$ = $O(N\log N)$,  slope 1 = $O(N^2)$")
+    ax.legend(fontsize=9)
+    ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+    fig.savefig(out_path, dpi=150)
+    print(f"  Saved: {out_path}")
+    plt.close()
+
+
 def plot_time_vs_N(df: pd.DataFrame, out_path: str):
     M_paths = int(df["M_paths"].iloc[0]) if "M_paths" in df.columns else 10_000
     Ns_all = np.sort(df["N"].unique()).astype(float)
@@ -126,44 +155,58 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
         print(f"  {METHOD_STYLE[m]['label']:<20} {c:>12.3e} {a:>8.3f} {r2:>8.4f}")
 
 
+def fbm_variance_lost(N: int, ks, H: float = 0.10, T: float = 1.0) -> np.ndarray:
+    """
+    Fraction of total path variance trace(C - C_k) / trace(C) discarded by the optimal
+    rank-k truncation of the fBM covariance (exact eigendecomposition, noise-free).
+    """
+    t = np.arange(1, N + 1) * (T / N)
+    C = 0.5 * (t[:, None] ** (2 * H) + t[None, :] ** (2 * H) - np.abs(t[:, None] - t[None, :]) ** (2 * H))
+    w = np.linalg.eigvalsh(C)[::-1]
+    return np.array([w[k:].sum() / w.sum() for k in ks])
+
+
+# Paths per rank in the error experiment (M_ERR in benchmark.cpp) and the payoff std
+# at sigma0 = 0.2, nu = 0.52, used for the price standard error
+M_ERR = 100_000
+SIGMA_PAYOFF = 9.5
+
+
 def plot_error_vs_rank(df: pd.DataFrame, out_path: str):
     ref_price = df["reference_price"].iloc[0]
-    N_val     = df["N"].iloc[0]
-    # Infer M_paths from time_vs_N if available, else use known default
-    M_paths   = 10_000
+    N_val     = int(df["N"].iloc[0])
+    ks        = df["rank_k"].values
 
-    ks             = df["rank_k"].values
-    frob_pct       = df["frob_error"] * 100
-    rel_price_pct  = df["rel_price_error"] * 100
-
-    # MC noise floor: mean absolute price error over the 3 highest-rank rows
-    # (at high rank, Frobenius error is small so price error is mostly MC noise)
-    noise_abs = df["abs_price_error"].iloc[-3:].mean()
-    noise_pct = noise_abs / ref_price * 100
+    frob_pct  = df["frob_error"] * 100
+    var_pct   = fbm_variance_lost(N_val, ks) * 100
+    price_pct = (df["rsvd_price"] - ref_price) / ref_price * 100   # signed
+    se_pct    = SIGMA_PAYOFF / np.sqrt(M_ERR) / ref_price * 100
 
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     fig.text(
         0.5, 1.01,
-        f"N={N_val}, M={M_paths:,} paths,  reference = avg of 500k Cholesky + FFT paths",
+        f"N={N_val}, M={M_ERR:,} paths per rank,  reference = avg of 500k Cholesky + FFT paths",
         ha="center", fontsize=10, style="italic",
     )
 
-    ax.semilogy(ks, frob_pct, marker="D", color="#9b59b6",
-                linewidth=2, markersize=7,
-                label=r"Frobenius  $\|C - C_k\|_F \,/\, \|C\|_F$  (noise-free)")
-    ax.semilogy(ks, rel_price_pct, marker="o", color="#e74c3c",
-                linewidth=2, markersize=7, linestyle="--",
-                label=r"$|\hat{p}_k - p_{\rm ref}| \,/\, p_{\rm ref}$  (price, MC-noisy)")
-    ax.axhline(noise_pct, color="#e74c3c", linestyle=":", alpha=0.6, linewidth=1.5,
-               label=f"MC noise floor ≈ {noise_pct:.1f}%  (M={M_paths:,})")
+    ax.semilogy(ks, frob_pct, marker="D", color="#9b59b6", linewidth=2, markersize=7,
+                label=r"Frobenius  $\|C - C_k\|_F \,/\, \|C\|_F$")
+    ax.semilogy(ks, var_pct, marker="s", color="#2980b9", linewidth=2, markersize=7,
+                label=r"variance lost  ${\rm tr}(C - C_k) \,/\, {\rm tr}(C)$")
+    ax.errorbar(ks, -price_pct, yerr=2 * se_pct, marker="o", color="#e74c3c",
+                linewidth=2, markersize=7, linestyle="--", capsize=3,
+                label=r"price underpricing  $(p_{\rm ref} - \hat{p}_k)/p_{\rm ref}$  ($\pm 2$ SE)")
 
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(ks)
+    ax.set_xticklabels([str(k) for k in ks])
     ax.set_xlabel("rSVD target rank k")
     ax.set_ylabel("Relative error (%)")
     ax.set_title(
         "Low-rank rSVD approximation quality vs rank\n"
-        "Both metrics on shared log-scale — MC noise dominates price error at high rank"
+        "price bias decays slowly, like the variance lost, not like the Frobenius error"
     )
-    ax.legend(fontsize=9, loc="upper right")
+    ax.legend(fontsize=8.5, loc="upper right")
     ax.grid(True, which="both", alpha=0.4)
 
     fig.savefig(out_path, dpi=150)
@@ -304,6 +347,11 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
                   marker="o", markersize=7, linewidth=2,
                   linestyle=method_ls[method], color=color,
                   label=method_labels[method])
+        if "measured_peak_mb" in sub.columns:
+            # Lifetime peak measured in a forked child (includes allocator/GEMM workspace)
+            meas = sub["measured_peak_mb"].clip(lower=1e-3)
+            ax.loglog(sub["N"], meas, marker="D", markersize=6, linestyle="none",
+                      markerfacecolor="none", markeredgecolor=color, markeredgewidth=1.5)
 
     # L3 threshold line
     ax.axhline(L3_MB, color="#e74c3c", linestyle="--", linewidth=1.2,
@@ -314,8 +362,9 @@ def plot_memory_vs_N(df: pd.DataFrame, out_path: str):
     ax.loglog(N_range, 8e-6 * N_range ** 2, "lightgray", linewidth=1, linestyle=":")
 
     ax.set_xlabel("Path resolution N")
-    ax.set_ylabel("Theoretical peak memory (MB)")
-    ax.set_title("Peak memory vs $N$\n(dashed = 16 MB cache; Cholesky and rSVD-held cross it at $N \\approx 1450$)")
+    ax.set_ylabel("Memory (MB)")
+    ax.set_title("Memory vs $N$: lines = dominant array, hollow = measured lifetime peak\n"
+                 "(dashed = 16 MB cache; Cholesky and rSVD-held cross it at $N \\approx 1450$)")
     ax.legend(fontsize=8)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
 
@@ -366,6 +415,8 @@ def main():
         plot_time_vs_N(df_time, os.path.join(out_dir, "time_vs_N.png"))
         print("\nPlotting construction breakdown ...")
         plot_construction_breakdown(df_time, os.path.join(out_dir, "construction_breakdown.png"))
+        print("\nPlotting per-path cost ...")
+        plot_per_path_cost(df_time, os.path.join(out_dir, "per_path_cost.png"))
         if "theoretical_peak_mb" in df_time.columns:
             print("\nPlotting memory vs N ...")
             plot_memory_vs_N(df_time, os.path.join(out_dir, "memory_vs_N.png"))
