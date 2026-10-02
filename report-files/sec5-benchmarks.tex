@@ -3,17 +3,17 @@
 
 All C++ benchmarks were run single-threaded on an Apple M2 (8-core, 24~GB unified
 memory, rated DRAM bandwidth 100~GB/s; its largest cache is the 16~MB L2 shared by
-the performance cores, and it has no L3), compiled with
-\texttt{-O3 -march=native -DNDEBUG}, with $M=10{,}000$ paths and
-$N \in \{252, 500, 1000\}$.  Timings come from a single benchmark run; back-to-back
-repeats of the Cholesky pricer varied by up to $\approx 15\%$.  Reference prices use
-$M=500{,}000$ paths (see §\ref{sec:errorrank}).
+the performance cores, and it has no L3), compiled with \texttt{-O3} and
+\texttt{-march=native}, with $M=10{,}000$ paths and seven grid sizes $N$ from 64 to
+4000 (64, 128, 252, 500, 1000, 2000, 4000).  Each timing is the median of three
+repeats with the same seed; repeats of the same configuration varied by up to
+$\approx 15\%$.  Reference prices use $M=500{,}000$ paths (see §\ref{sec:errorrank}).
 
 \subsection{Runtime scaling}
 \label{sec:timing}
 
-Measurement setup: controlled: $M = 10{,}000$ paths; independent: $N \in \{252,500,1000\}$
-and method; dependent: total wall-clock time.
+Measurement setup: controlled: $M = 10{,}000$ paths; independent: $N$ from 64 to
+4000, and method; dependent: total wall-clock time.
 
 \begin{figure}[t]
   \centering
@@ -22,58 +22,73 @@ and method; dependent: total wall-clock time.
     laws $t = c \cdot N^\alpha$, and fitted exponents $\alpha$ with prefactors $c$
     (right panel; dotted line = theoretical exponent).
     Controlled: $M=10{,}000$ paths.
-    Independent: $N \in \{252, 500, 1000\}$, method.
-    Dependent: total wall-clock time.}
+    Independent: $N \in \{64, \ldots, 4000\}$, method.
+    Dependent: total wall-clock time (median of 3 repeats).}
   \label{fig:timing}
 \end{figure}
 
-Figure~\ref{fig:timing} shows the results.  Log-log regression over three $N$ values
-gives the fitted exponents in Table~\ref{tab:exponents}.
+Figure~\ref{fig:timing} shows the results.  A single power law describes the FFT
+and rSVD methods well, with $\alpha = 1.02$ for both ($R^2 = 1.000$ and $0.995$), but
+not Cholesky: its global fit gives $\alpha = 1.52$ with $R^2 = 0.978$, because the
+curve bends.  Local exponents between successive grid sizes
+(Table~\ref{tab:exponents}) show what a single exponent hides.
 
 \begin{table}[t]
-  \caption{Fitted power-law exponents $\alpha$ from log-log regression
-    $\log t = \log c + \alpha \log N$ over $N \in \{252, 500, 1000\}$.
-    Theoretical exponent assumes $O(MN^\alpha)$ total work.}
+  \caption{Local scaling exponents $\log(t_2/t_1)/\log(N_2/N_1)$ between successive
+    grid sizes ($M = 10{,}000$).  Theoretical exponents assume the $O(MN^\alpha)$
+    sampling cost dominates.}
   \label{tab:exponents}
   \centering
-  \begin{tabular}{lrrl}
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{lrrrrrrr}
     \toprule
-    Method & Fitted $\alpha$ & Fitted $c$ & Theoretical $\alpha$ \\
+    $N$ range & 64--128 & --252 & --500 & --1000 & --2000 & --4000 & Theory \\
     \midrule
-    Dense Cholesky  & 1.33 & $1.1\times 10^{-4}$ & 2.0 \\
-    Circulant + FFT & 0.95 & $1.5\times 10^{-3}$ & 1.0 \\
-    Low-rank rSVD ($k=32$) & 1.02 & $3.6\times 10^{-4}$ & 1.0 \\
+    Cholesky  & 0.95 & 1.22 & 1.29 & 1.44 & 2.17 & 2.10 & 2.0 \\
+    FFT       & 0.92 & 1.02 & 1.04 & 1.02 & 1.06 & 0.97 & 1.0 \\
+    rSVD ($k=32$) & 0.72 & 0.92 & 1.08 & 1.05 & 1.12 & 1.17 & 1.0 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-The Cholesky empirical exponent ($\alpha \approx 1.33$) is substantially below the
-theoretical $2.0$.  This occurs because the per-path cost is not purely the $O(N^2)$
-triangular multiply: drawing $N$ Gaussian variates, computing $N$ exponentials for the
-stock price path, and accumulating the payoff each contribute $O(N)$ overhead that is
-non-negligible for $N \leq 1000$.  As $N$ grows further, the $N^2$ term will
-eventually dominate and the exponent will approach $2.0$; the tested range is still
-in the crossover region.
+The Cholesky exponent climbs from about 1 to slightly above 2.  At small $N$ the
+per-path cost is not the $O(N^2)$ triangular multiply but the $O(N)$ work around it:
+drawing $N$ Gaussian variates, computing $2N$ exponentials for the stock price path,
+and accumulating the payoff.  Above $N \approx 1000$ the mat-vec dominates, and the
+exponent exceeds the theoretical 2 because $L$ no longer fits in cache
+(§\ref{sec:memory}).  The rSVD exponent creeps above 1 at large $N$ as its
+$O(N^2 k)$ construction becomes visible: 23\% of the runtime at $N = 4000$.
 
-The FFT and rSVD exponents are both $\approx 1.0$, consistent with theory.  The
-$O(\log N)$ factor distinguishing $O(N\log N)$ from $O(N)$ is unresolvable over a
-$4\times$ range in $N$ (a $\log$-ratio of $\log(1000)/\log(252) \approx 1.25$),
-and appears as noise in the regression.
+The FFT method's $\log N$ factor stays invisible even over this $64\times$ range in $N$.
+Figure~\ref{fig:perpath} normalizes the MC time per path by $N$.  An $O(N)$ method is
+flat in this plot, an $O(N \log N)$ method rises linearly in $\log N$, and an
+$O(N^2)$ method rises with slope 1.  The FFT curve is flat at 67--73~ns per time step
+from $N = 64$ to $4000$.  The reason is that the transform is a small part of each
+path.  In isolation at $N = 1000$, the inverse FFT takes $\approx 8\,\mu$s per transform,
+while the random numbers and the price-path arithmetic, both $O(N)$, take the rest of
+the $\approx 70\,\mu$s per path.
 
-Absolute times matter as much as exponents.  At $N = 1000$ the three methods take
-$1.13$~s (Cholesky), $1.04$~s (FFT), and $0.43$~s (rSVD, $k = 32$).  The FFT method
-is only $\approx 9\%$ faster than Cholesky, even though its sampling step does an
-order of magnitude less arithmetic per path ($\approx 10^5$ flops for a size-$2N$
-complex FFT against $N^2 = 10^6$ for the triangular mat-vec).  Two effects explain
-the gap.  First, the price-path work ($N$ Gaussian draws, $2N$ exponentials, and the
-payoff average) is identical for all three methods and is a large share of every
-per-path cost.  Second, the FFT sampler draws $4N$ Gaussian variates per path against
-$N$ for Cholesky, and at $N = 1000$ those draws cost about eight times as much as the
-inverse FFT itself (§\ref{sec:opt-opportunities}).  The asymptotic advantage is real,
-and the gap widens with $N$ ($\alpha = 1.33$ against $0.95$), but at $N \leq 1000$
-it is largely hidden by work the two methods share.  With the earlier dense-$L$
-baseline (§\ref{sec:cholesky-impl}) the FFT method appeared $1.5\times$ faster, a
-reminder that a speedup is only as meaningful as its baseline.
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.75\linewidth]{per_path_cost.png}
+  \caption{Monte Carlo time per path per time step vs.\ $N$.  Flat means $O(N)$;
+    rising linearly on the log-$x$ axis means $O(N\log N)$; slope 1 means $O(N^2)$.
+    Controlled: $M=10{,}000$ paths.
+    Independent: $N$, method.
+    Dependent: MC loop time $/(MN)$.}
+  \label{fig:perpath}
+\end{figure}
+
+Absolute times matter as much as exponents.  The FFT method overtakes Cholesky at
+$N \approx 250$ and is $1.6\times$ faster at $N = 1000$ (0.71~s against 1.15~s) and
+$7.6\times$ faster at $N = 4000$ (2.91~s against 22.25~s).  The rSVD method is fastest at
+every $N$, $10.5\times$ faster than Cholesky at $N = 4000$, but it is approximate
+(§\ref{sec:errorrank}).  Two implementation choices shaped these numbers
+(§\ref{sec:cholesky-impl}, §\ref{sec:two-paths}): with a dense-$L$ Cholesky baseline
+the FFT advantage at $N = 1000$ looked like $1.5\times$, and with a triangular baseline
+but one path per transform it shrank to $9\%$.  A speedup is only as meaningful as its
+baseline.
 
 \begin{figure}[t]
   \centering
@@ -82,11 +97,11 @@ reminder that a speedup is only as meaningful as its baseline.
     Light portion = construction (factorization or eigenvalue computation);
     dark portion = MC loop.  Percentages label the construction fraction.
     The FFT setup is negligible ($<1\%$); rSVD setup grows with $N$ because
-    forming $L_k$ requires a full $O(N^2 k)$ sketch; Cholesky setup is a
-    fixed $O(N^3)$ fraction that is small relative to the $O(MN^2)$ MC cost at
-    $M = 10{,}000$.
+    forming $L_k$ requires a full $O(N^2 k)$ sketch; the Cholesky factorization
+    stays below 4\% of its runtime because the $O(MN^2)$ MC cost grows just as fast
+    at $M = 10{,}000$.
     Controlled: $M=10{,}000$ paths.
-    Independent: $N \in \{252, 500, 1000\}$, method.
+    Independent: $N$, method.
     Dependent: wall-clock time split between construction and MC loop.}
   \label{fig:breakdown}
 \end{figure}
@@ -94,43 +109,45 @@ reminder that a speedup is only as meaningful as its baseline.
 \subsection{Memory and cache pressure}
 \label{sec:memory}
 
-Controlled: $M = 10{,}000$ paths; Independent: $N$, method;
-Dependent: size of the dominant arrays resident during the MC loop (C++), peak heap
-allocation (Python via \texttt{tracemalloc}).  For C++ I report the analytical size
-rather than measured RSS.  The benchmark's RSS change across a call is not a peak,
-because buffers are freed before the call returns, and it can read zero.
+Controlled: $M = 10{,}000$ paths; Independent: $N$, method; Dependent: size of the
+dominant arrays resident during the MC loop and the measured lifetime peak (C++),
+peak heap allocation (Python via \texttt{tracemalloc}).  The measured peak comes from
+running each method once in a forked child process and reading its peak resident set
+size via \texttt{wait4}, minus that of an idle child.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{memory_vs_N.png}
-  \caption{Size of the dominant array held during the MC loop vs.\ $N$ for all C++
-    methods (left), and the effective rate at which the Cholesky loop streams $L$
-    (right).  The dashed horizontal line marks the M2's 16~MB L2 cache; Cholesky and
-    the rSVD variant that retains $C$ cross it at $N \approx 1450$.  The rSVD
-    variant that frees $C$ before the MC loop stays far below it.
+  \caption{Memory vs.\ $N$ for all C++ methods (left: lines = dominant array,
+    hollow markers = measured lifetime peak), and the effective rate at which the
+    Cholesky loop streams $L$ (right).  The dashed horizontal line marks the M2's
+    16~MB L2 cache; Cholesky and the rSVD variant that retains $C$ cross it at
+    $N \approx 1450$.
     Controlled: $M=10{,}000$ paths.
     Independent: $N$, method.
     Dependent: memory (MB) and effective streaming rate (GB/s), computed as bytes of
-    $L$ read divided by wall time; this is not a DRAM measurement.}
+    $L$ read divided by wall time.}
   \label{fig:memory}
 \end{figure}
 
-At the tested sizes the Cholesky loop is not DRAM-bound.  At $N = 1000$, $L$
-occupies $N^2 \times 8 = 7.6$~MB (the full matrix is allocated, though only its
-lower half is read), which fits in the 16~MB L2.  Dividing the bytes of $L$ read in
-a run by its wall time gives an effective streaming rate of $14$, $24$, and
-$35$~GB/s at $N = 252$, $500$, and $1000$, well below the 100~GB/s DRAM rating.
-Because $L$ is cache-resident, these figures measure how fast the loop consumes
-$L$, not DRAM traffic.  Beyond $N \approx 1450$, $L$ no longer fits in L2 and every
-path must stream $4N(N+1)$ bytes from DRAM, at which point the loop would become
-bandwidth-limited \citep{drepper2007every}.
+Dense methods pay $O(N^2)$ memory.  The Cholesky factor occupies $8N^2$ bytes, 7.6~MB at
+$N = 1000$ and 122~MB at $N = 4000$; the measured lifetime peaks are 9.7~MB and
+161~MB, the excess being allocator and matrix-multiply workspace.  The FFT method
+holds only $2N$ scale factors and two length-$2N$ complex buffers, 80~KB at
+$N = 1000$, and its measured peak at $N = 4000$ is 1.1~MB.  The rSVD variant that frees
+$C$ before the MC loop keeps only $L_k$ resident while sampling (0.24~MB at $N = 1000$,
+$k = 32$).  Its lifetime peak, however, matches the variant that keeps $C$ (both about
+11--13~MB at $N = 1000$), because $C$ must exist while $L_k$ is built.
 
-The rSVD method has two memory variants.  The standard variant retains $C$ in memory
-during the MC loop (7.6~MB at $N = 1000$, the same footprint as Cholesky).  A
-second variant, \texttt{price\_freed\_timed()}, releases $C$ immediately after
-forming $L_k$; the resident footprint during the MC loop is then $O(Nk)$ (0.24~MB
-at $N=1000$, $k=32$), far below the L2 capacity.  The FFT method needs only four
-length-$2N$ complex buffers, 128~KB at $N = 1000$.
+The Cholesky loop's effective streaming rate (Figure~\ref{fig:memory}, right) shows
+the memory hierarchy at work.  Dividing the bytes of the lower triangle of $L$, read
+once per path, by wall time gives 14, 24, and 35~GB/s at $N = 252$, 500, and 1000,
+then 31 and 29~GB/s at $N = 2000$ and 4000.  The rate rises while $L$ fits in the
+16~MB L2 and the arithmetic per byte grows, then falls once $L$ spills out of cache
+at $N \approx 1450$ and every path must stream it from DRAM.  That turnover is the
+signature of a memory-bandwidth-bound loop \citep{drepper2007every}, and it is why
+the local exponent exceeds 2 at large $N$.  The figures remain effective rates, not
+direct measurements of DRAM traffic.
 
 The Python RFSV engine (used in Sections~\ref{sec:validation}
 and~\ref{sec:sensitivity}) is vectorized across paths and so has a different
@@ -154,7 +171,7 @@ top.
     \textbf{(b)} Peak bytes vs.\ total elements $M \times N$; the fitted slope
     $\approx 104$ bytes/element is 13 float64 words per output element, consistent
     with the $(M, 2N)$ real and complex working arrays of the path generator.
-    Controlled: $H=0.10$, $\nu=0.30$.
+    Controlled: $H=0.10$, $\nu=0.52$.
     Independent: $N \in \{64, 128, 252, 512\}$, $M \in \{100, 1000, 5000, 10000\}$.
     Dependent: peak heap allocation (bytes).}
   \label{fig:memprofile}
@@ -163,61 +180,46 @@ top.
 \subsection{MC convergence}
 \label{sec:convergence}
 
-Controlled: $H=0.10$, $\nu=0.30$, $K=100$, $T=1$, $S_0=100$, $r=0$,
+Controlled: $H=0.10$, $\nu=0.52$, $\sigma_0 = 0.2$, $K=100$, $T=1$, $S_0=100$, $r=0$,
 $N=252$; Independent: $M \in \{100, 250, 500, 1000, 2500, 5000,
 10000, 25000\}$; Dependent: mean price and cross-seed standard deviation
-over 5 independent random seeds.
+over 20 independent random seeds.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{convergence.png}
   \caption{MC convergence: price $\pm 1\sigma$ vs.\ number of paths $M$ (left), and
     log-log plot of cross-seed standard deviation vs.\ $M$ with fitted slope (right).
-    The shaded band in the left panel is $\pm 2\hat{\sigma}_\mathrm{payoff}/\sqrt{M}$
-    around the C++ reference price, with $\hat{\sigma}_\mathrm{payoff}$ the sample
-    standard deviation of the 25{,}000 individual payoffs of one run.
-    Controlled: $N=252$, $H=0.10$, $\nu=0.30$.
-    Independent: $M$ (left and right); 5 seeds (right).
+    The dashed line is a $10^6$-path reference on the same $N = 252$ grid; the shaded
+    band is $\pm 2\hat{\sigma}_\mathrm{payoff}/\sqrt{M}$ around it, with
+    $\hat{\sigma}_\mathrm{payoff}$ the sample standard deviation of the $10^6$
+    reference payoffs.
+    Controlled: $N=252$, $H=0.10$, $\nu=0.52$, $\sigma_0 = 0.2$.
+    Independent: $M$ (left and right); 20 seeds (right).
     Dependent: mean price $\pm 1\sigma$ and log-log slope.}
   \label{fig:convergence}
 \end{figure}
 
 Figure~\ref{fig:convergence} shows the results.  The fitted log-log slope is
-$-0.711$ ($R^2 = 0.959$), steeper than the theoretical $-0.5$ from the central
-limit theorem \citep{glasserman2004monte}.  The discrepancy arises from the small-$M$
-regime: with only 5 seeds, the cross-seed standard deviation at $M \leq 500$ is a
-noisy chi-squared estimate (4 degrees of freedom) with high variance, pulling
-the regression slope away from $-0.5$.  (The sample standard deviation is in
-fact a downward-biased estimator of $\sigma$ at finite sample sizes by Jensen's
-inequality; the dominant effect here is its large variability, not a directional
-bias.)  The theoretical
-line at slope $-0.5$ is shown as a dotted reference in Figure~\ref{fig:convergence}(b);
-the data approach it at large $M$ but deviate below $M \approx 1{,}000$.
-The cross-seed standard deviation at small $M$ is also noisy because the payoff
-itself is highly variable, with $\sigma_\mathrm{payoff} \approx 61$ (the sample
-standard deviation over 200{,}000 paths).  An earlier version of this study
-estimated $\sigma_\mathrm{payoff} \approx 35$ by rescaling the spread of only five
-seed-level prices, an estimate with roughly $35\%$ relative error; the current code
-uses the per-path payoffs directly.  The payoff is so variable because our RFSV
-model uses
-$\sigma_0 = e^{\nu \cdot 0} = 1.0$ (100\% annualised base volatility), producing
-highly variable payoffs.  This is not a model defect but a consequence of using the
-uncalibrated log-vol parameterisation $\log\sigma_t = \nu W_t^H$; the IV validation
-in §\ref{sec:iv} auto-calibrates a drift $\mu_0 = \log\sigma_\mathrm{target}$ to
-match market volatility levels.  A calibrated $\mu_0 \approx \log(0.18) \approx
--1.7$ would reduce $\sigma_\mathrm{payoff}$ by a factor of $\sim 5$ and the path
-count required for the same precision by $\sim 25$; the uncalibrated parameterisation
-was retained to keep the convergence study independent of the IV calibration procedure.
+$-0.488$ ($R^2 = 0.986$), in good agreement with the theoretical $-0.5$ from the central
+limit theorem \citep{glasserman2004monte}.  The reference on the same grid is
+$5.3252 \pm 0.0095$ from $10^6$ paths, and every seed-mean lies within its band.  The
+payoff standard deviation is $\sigma_\mathrm{payoff} = 9.46$, so $M = 10{,}000$ paths give
+a standard error of $\approx 0.095$, $1.8\%$ of the price.  To bring the 95\%
+confidence half-width below $1\%$ of the price would take
+$M \approx (2\sigma_\mathrm{payoff}/0.053)^2 \approx 130{,}000$ paths.  Where differences
+between configurations matter, I use common random numbers instead, which makes
+those differences far more precise than the absolute prices.
 
-To achieve price uncertainty below 0.5 units (roughly 2\% of the ATM price
-$\approx 23.6$) at 95\% confidence requires
-$M \approx (2\sigma_\mathrm{payoff}/0.5)^2 \approx 60{,}000$ paths.  I use
-$M = 10{,}000$ for most experiments, accepting $\approx \pm 1.2$ units per run
-($2 \times \mathrm{SE}$, the 95\% confidence half-width).  Where differences between
-runs matter, I use common random numbers or means over multiple seeds.  One caveat:
-the reference line in Figure~\ref{fig:convergence} is the C++ reference at $N = 500$,
-while this study simulates at $N = 252$; the averaging grids differ, so the line is a
-visual guide rather than the exact target.
+Two earlier versions of this study failed this test, and both failures are
+instructive.  The first estimated $\sigma_\mathrm{payoff}$ from the spread of only five
+seed-level prices, and fitted a slope of $-0.71$: a standard deviation estimated from
+five samples has roughly 35\% relative error.  The second used $\sigma_0 = 1$, and its
+payoff was so heavy-tailed that the sample standard deviation grew with the sample
+size, from 88 over $2 \times 10^5$ paths to 118 over $10^6$, with a single path carrying a
+third of the sample variance.  The Monte Carlo error bars of that parameterization
+were not meaningful; at $\sigma_0 = 0.2$ the standard deviation of 50{,}000-path batches
+ranges only from 9.3 to 9.6.
 
 \subsection{Numerical stability}
 \label{sec:stability}
@@ -284,46 +286,45 @@ its well-separated off-diagonal blocks still compress to rank $\leq 3$.
 \subsection{Low-rank approximation quality}
 \label{sec:errorrank}
 
-Controlled: $N = 500$, $M = 10{,}000$ paths (rSVD) and $M = 500{,}000$ paths
-(reference); Independent: rSVD target rank $k \in \{2, 4, 8, 16, 32, 64,
-128\}$; Dependent: Frobenius error $\|C - C_k\|_F / \|C\|_F$ and
-relative price error $|\hat{p}_k - p_\mathrm{ref}| / p_\mathrm{ref}$.
+Controlled: $N = 500$, $M = 100{,}000$ paths per rank (rSVD) and $M = 500{,}000$
+paths per exact method (reference); Independent: rSVD target rank
+$k \in \{2, 4, 8, 16, 32, 64, 128\}$; Dependent: Frobenius error, fraction of path
+variance lost, and relative price error.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{error_vs_rank.png}
-  \caption{Low-rank rSVD approximation quality vs.\ rank $k$.  Both the Frobenius
-    error (noise-free, exact) and the price error relative to a 500{,}000-path
-    reference are shown on shared log-scale axes.  The dashed horizontal line marks
-    the MC noise floor at $M = 10{,}000$ paths.
-    Controlled: $N=500$, $H=0.10$.
+  \caption{Low-rank rSVD approximation quality vs.\ rank $k$: the Frobenius error
+    $\|C - C_k\|_F/\|C\|_F$, the fraction of path variance discarded
+    $\mathrm{tr}(C - C_k)/\mathrm{tr}(C)$ (both exact), and the relative underpricing
+    against the reference with $\pm 2$ standard-error bars.
+    Controlled: $N=500$, $H=0.10$, $M = 100{,}000$ paths per rank.
     Independent: rank $k$.
-    Dependent: Frobenius error and relative price error.}
+    Dependent: relative error (\%).}
   \label{fig:errorrank}
 \end{figure}
 
 Figure~\ref{fig:errorrank} shows results.  The reference price
-$p_\mathrm{ref} = 23.58$ is the average of a 500{,}000-path Cholesky run ($23.62$)
-and a 500{,}000-path FFT run ($23.54$); averaging two independent exact methods
-avoids privileging either as ground truth.  With $\sigma_\mathrm{payoff} \approx 61$,
-each run has a standard error of $\approx 0.09$.  Their difference of $0.08$ is below
-the $0.12$ standard error of a difference, consistent with both methods being exact,
-and the pooled reference has a standard error of $\approx 0.06$.
+$p_\mathrm{ref} = 5.3144$ is the average of a 500{,}000-path Cholesky run ($5.3195$)
+and a 500{,}000-path FFT run ($5.3093$); averaging two independent exact methods
+avoids privileging either as ground truth.  Each run has a standard error of
+$\approx 0.013$, and their difference of $0.010$ is about half the standard error of a
+difference, consistent with both methods being exact.
 
-Two accuracy metrics are reported because they measure different things.  The
-Frobenius error $\|C - C_k\|_F / \|C\|_F$ measures matrix approximation quality
-exactly and without noise.  It decreases monotonically but slowly: $8.5\%$ at
-$k = 2$, $3.5\%$ at $k = 8$, $1.9\%$ at $k = 32$, and $1.2\%$ at $k = 128$.  The price
-error measures end-to-end accuracy but carries MC noise of $\approx 0.6$ units at
-$M = 10{,}000$, i.e.\ $\approx 2.6\%$ of $p_\mathrm{ref}$.
+With $100{,}000$ paths per rank the price error is resolved, and it is a systematic
+underpricing: $-8.1\%$ at $k = 2$, $-6.8\%$ at $k = 8$, $-4.3\%$ at $k = 32$, and $-3.9\%$
+at $k = 128$, each many times the standard error of $\approx 0.56\%$.  The Frobenius
+error suggests a much better approximation than these prices do: it falls from
+$8.5\%$ to $1.2\%$ over the same ranks.
 
-The key limitation of this experiment is that the price errors are not resolved.
-The observed relative errors range from $0.2\%$ ($k = 4$) to $3.1\%$ ($k = 2$), and
-every one lies within $\approx 1.2$ standard errors of zero, so they do not
-distinguish one rank from another.  The non-monotone pattern ($2.6\%$ at $k = 64$
-against $0.2\%$ at $k = 4$) is noise.  Resolving a price bias of $0.1$ units would
-need on the order of $M = 10^6$ paths per rank.  The Frobenius error is therefore the
-meaningful accuracy metric here.  Its slow decay matches
-Figure~\ref{fig:structure}(d): the spectrum of the full matrix $C$ decays only
-algebraically, because the rough kernel's singularity lies on the diagonal, where a
-global rank-$k$ approximation cannot isolate it.
+The key pitfall is that the Frobenius norm is the wrong measure of what matters for
+pricing.  It is dominated by the few large eigenvalues of $C$, which a rank-$k$
+approximation captures.  The option price depends instead on how much variance the
+simulated paths carry, and a rank-$k$ truncation discards the long algebraic tail of
+small eigenvalues, which hold the short-scale, rough part of the path.  The fraction
+of path variance lost, $\mathrm{tr}(C - C_k)/\mathrm{tr}(C)$, is $37.9\%$ at $k = 2$,
+$20.8\%$ at $k = 32$, and still $13.2\%$ at $k = 128$; at the first time step a rank-128
+approximation keeps only 60\% of the variance.  Less volatility means a lower Asian
+price, and the price bias decays slowly in the same way as the variance lost.  For
+low-rank samplers of rough processes, the trace error should be reported alongside,
+or instead of, the Frobenius error.

@@ -43,12 +43,12 @@ log-realized-variance behaves as fractional Brownian motion with $H \approx 0.10
 Estimating $H$ by ordinary least squares on log-realized-variance increments across
 five major indices (S\&P 500, NASDAQ, DAX, FTSE 100, Nikkei 225) and time scales
 ranging from one day to one month, they find a consistent Hurst exponent well below
-$\nicefrac{1}{2}$, with $R^2 > 0.90$ in each case.  I take $H = 0.10$ and
-$\nu = 0.30$ from their estimates on high-frequency realized variance data
-\citep{oxfordman}.  One caveat concerns units: \citet{gatheral2018volatility} measure
-time in days, while my engine measures it in years ($T = 1$).  In year units the same
-fit corresponds to $\nu \approx 0.3 \cdot 252^{0.1} \approx 0.52$, so my experiments
-run at a lower vol-of-vol than the empirical estimate.  My own variogram fit to
+$\nicefrac{1}{2}$, with $R^2 > 0.90$ in each case.  I take $H = 0.10$ and their
+vol-of-vol estimate from high-frequency realized variance data \citep{oxfordman},
+$\nu \approx 0.3$.  One subtlety concerns units: \citet{gatheral2018volatility}
+measure time in days, while my engine measures it in years ($T = 1$).  Because the
+log-vol increment variance scales as $\nu^2\Delta^{2H}$, the same fit in year units is
+$\nu = 0.3 \cdot 252^{0.1} \approx 0.52$, which is the value I use.  My own variogram fit to
 non-overlapping 5-day realized variance from \texttt{yfinance}, with time in years,
 gives $H \approx 0.12$ ($R^2 \approx 0.98$ across a handful of lags) and
 $\nu \approx 0.87$, the latter inflated by measurement noise in weekly
@@ -64,7 +64,7 @@ volatility clustering manifests on timescales an order of magnitude shorter than
 
 The RFSV model I studied is \citep{gatheral2018volatility}
 \begin{equation}
-  \log\sigma_t = \nu W_t^H, \qquad
+  \log\sigma_t = \log\sigma_0 + \nu W_t^H, \qquad
   dS_t = r S_t\,dt + \sigma_t S_t\, dW_t^{\mathbb{Q}},
 \end{equation}
 where $W_t^H$ is the fractional Brownian motion of \citet{mandelbrot1968fractional}
@@ -72,8 +72,16 @@ with covariance $\mathbb{E}[W_t^H W_s^H] = \tfrac{1}{2}(t^{2H}+s^{2H}-|t-s|^{2H}
 I set $r = 0$ throughout for simplicity (consistent with \texttt{params.hpp}); the
 drift term drops out of all pricing formulas but is retained in the SDE for
 completeness.
-I use $H = 0.10$ and $\nu = 0.30$ throughout, and also explore the sensitivity of
-option prices to both parameters in Section~\ref{sec:sensitivity}.
+I use $H = 0.10$, $\nu = 0.52$, and base volatility $\sigma_0 = 0.2$ throughout, and
+also explore the sensitivity of option prices to $H$ and $\nu$ in
+Section~\ref{sec:sensitivity}.  The base level is not a cosmetic choice.  An earlier
+version of this study used $\sigma_0 = 1$ (100\% volatility); at $\nu = 0.52$ that
+payoff is so heavy-tailed that a single path in $10^6$ carried 34\% of the sample
+variance, and Monte Carlo error bars were meaningless.  At $\sigma_0 = 0.2$ the largest
+path carries $0.11\%$, and the payoff standard deviation is stable across batches.
+Strictly, the payoff variance is infinite for any lognormal volatility model, because
+$\mathbb{E}[S_t^2]$ contains $\mathbb{E}[\exp(\Delta t\, e^{2\nu W})]$; in practice the
+divergence sits so far in the tail that it is never sampled.
 
 \subsection{The computational bottleneck}
 \label{sec:bottleneck}
@@ -94,9 +102,9 @@ decomposition requires exactly $N^3/3 \approx 5.3$ million floating-point operat
 LU); this is a one-time cost.  The per-path triangular multiply costs $O(N^2) \approx 63{,}000$ flops, so
 the total Monte Carlo loop costs $O(MN^2) \approx 630$ million flops, more than
 $100\times$ the factorization.  MC pricing error falls as $O(M^{-1/2})$: with
-$\sigma_\mathrm{payoff} \approx 61$ (Section~\ref{sec:convergence}), $M = 10{,}000$
-paths give a standard error of $\approx 0.6$ price units, about $2.6\%$ of the
-at-the-money price, and halving it requires four times as many paths.
+$\sigma_\mathrm{payoff} \approx 9.5$ (Section~\ref{sec:convergence}), $M = 10{,}000$
+paths give a standard error of $\approx 0.095$ price units, about $1.8\%$ of the
+at-the-money price of $\approx 5.3$, and halving it requires four times as many paths.
 
 Trading desks building sensitivity surfaces run parameter sweeps over $H$, $\nu$, and
 $K$, easily multiplying $M$ by factors of $10$--$100$.  Intraday risk monitoring at
@@ -133,8 +141,9 @@ by exploiting structure in the covariance matrix $C$:
         approximation of the entire $N\times N$ matrix (including the singular
         near-diagonal region) rather than of the smooth off-diagonal blocks alone.
         This is blunter, and must allocate rank budget to the diagonal singularity,
-        which is why the covariance error is still $1.2\%$ at $k = 128$ for
-        $H = 0.10$ (§\ref{sec:errorrank}).
+        which is why the sampler still discards $13\%$ of the path variance at
+        $k = 128$ for $H = 0.10$, and underprices by $\approx 4\%$
+        (§\ref{sec:errorrank}).
 \end{enumerate}
 
 Section~\ref{sec:foundations} develops the mathematical properties of $C$ that each

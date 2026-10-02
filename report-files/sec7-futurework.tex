@@ -64,30 +64,21 @@ a singular analytic part and a smooth FFT-able remainder is directly
 relevant to the fBM kernel $C(t,s)$ and motivates the hierarchical treatment
 in §\ref{sec:hmatrix-future}.
 
-\subsection{Variance-normalised roughness premium}
+\subsection{Other variance normalizations}
 \label{sec:variancenorm}
 
-The roughness premium in §\ref{sec:levy} is computed as
-$\hat{p}(H{=}0.10) - \hat{p}(H{=}0.50)$ at fixed $\nu = 0.30$.  At fixed
-$\nu$, the total integrated variance
-\begin{equation}
-  \mathbb{E}\!\left[\int_0^T \sigma_t^2\,dt\right]
-  = \int_0^T e^{2\nu^2 t^{2H}}\,dt
-\end{equation}
-depends on $H$: rougher paths (smaller $H$) have larger integrated variance
-because $t^{2H} > t$ on $(0,1)$ when $H < \nicefrac{1}{2}$.  The
-premium therefore conflates two effects: path regularity and total variance.
-
-A variance-normalised comparison holds integrated variance constant by
-adjusting $\nu$ as a function of $H$.  To leading order, matching the
-short-time variance gives
+Section~\ref{sec:levy} isolates roughness by matching the expected integrated
+variance~\eqref{eq:intvar} across $H$, which leaves about 70\% of the premium.  Other
+normalizations are defensible and would shift that share.  Matching the integrated
+log-volatility variance $\int_0^T \nu^2 t^{2H}\,dt$ instead gives the closed form
 \begin{equation}
   \nu(H) = \nu_0\sqrt{\frac{2H+1}{2}\,T^{1-2H}},
 \end{equation}
-with $\nu_0$ fixed at the Brownian reference ($H = \nicefrac{1}{2}$).
-Running §\ref{sec:levy} with $\nu(H)$ rather than fixed $\nu$ would isolate
-the pure roughness effect, resolving the confound noted in
-§\ref{sec:levy}.
+with $\nu_0$ fixed at the Brownian reference ($H = \nicefrac{1}{2}$).  From
+$(H, \nu) = (0.10, 0.52)$ this gives $\nu = 0.671$ at $H = 0.5$, against $0.651$ from
+matching~\eqref{eq:intvar}.  A third option holds the at-the-money implied volatility
+fixed, which is closer to how a trader would compare models.  Reporting the premium
+under all three would show how robust the roughness share is.
 
 \subsection{Spot-volatility correlation}
 \label{sec:rho-future}
@@ -119,7 +110,7 @@ first few coordinates.  Brownian bridge dimension ordering concentrates the
 largest variance components in the lowest-index dimensions, ensuring the
 low-discrepancy sequence acts on the high-information components first
 \citep{joy1996quasi}.  At $M = 10{,}000$, the MC standard error of
-$\approx 0.6$ (§\ref{sec:convergence}) would fall to $\approx 0.006$ under
+$\approx 0.095$ (§\ref{sec:convergence}) would fall to $\approx 0.001$ under
 ideal $O(M^{-1})$ QMC, a $100\times$ reduction at no additional computational
 cost, improving the statistical resolution of the roughness premium and
 parameter sensitivity results.

@@ -10,12 +10,13 @@ A C++ Monte Carlo pricer for an **arithmetic Asian call** under the **Rough Frac
 
 The project asks how far asymptotic complexity predicts real speedups on this problem, and *why* each method works or fails. Python scripts add calibration, validation, and structural/stability analysis.
 
-**Headline results** ($M = 10{,}000$ paths, Apple M2):
+**Headline results** ($M = 10{,}000$ paths, $N$ from 64 to 4000, Apple M2, single-threaded):
 
-- At $N = 1000$, FFT is only about 9% faster than a triangular Cholesky (1.04 s vs 1.13 s), though it needs $O(N)$ memory instead of $O(N^2)$. Each FFT path spends most of its time generating random numbers, not transforming.
-- The FFT method is exact for every $H \leq \tfrac{1}{2}$. The smallest circulant eigenvalue has the closed form $\Delta t^{2H}(N^{2H} - (N-1)^{2H}) > 0$.
-- Low-rank rSVD with $k = 32$ is fastest (0.43 s), but it is an *approximate* sampler. It leaves a 1.9% Frobenius error in the covariance, and that error decays slowly with $k$ because $H = 0.1$ makes the spectrum of $C$ heavy-tailed.
-- Fitted exponents over $N \in \{252, 500, 1000\}$: Cholesky $\approx 1.33$, FFT $\approx 0.95$, rSVD $\approx 1.02$. The Cholesky exponent is far below 3 because the $O(MN^2)$ path loop, not the $O(N^3)$ factorization, dominates.
+- **FFT wins at scale.** It overtakes Cholesky at $N \approx 250$ and is $1.6\times$ faster at $N = 1000$ and $7.6\times$ faster at $N = 4000$ (2.9 s vs 22.3 s), with $O(N)$ memory instead of $O(N^2)$.
+- **The FFT method is exact** for every $H \leq \tfrac{1}{2}$. The smallest circulant eigenvalue has the closed form $\Delta t^{2H}(N^{2H} - (N-1)^{2H}) > 0$.
+- **Low-rank rSVD is fastest but biased.** At $k = 32$ it is $10\times$ faster than Cholesky at $N = 4000$, but it underprices by about 4% even at $k = 128$. The bias follows the *variance* it discards (13% of the total at $k = 128$), which the commonly reported Frobenius error (1.2%) badly understates.
+- **Scaling.** FFT and rSVD scale linearly in $N$ over the whole range. Cholesky's local exponent rises from about 1 to 2.1 as the $N^2$ mat-vec takes over and its factor outgrows the 16 MB cache.
+- **Roughness premium.** At the money, rough volatility ($H = 0.1$) adds $0.47$ to the Asian price relative to $H = 0.5$ at the same $\nu$. About 70% of that ($0.33$) survives when the two models are matched on integrated variance.
 
 ---
 
@@ -33,7 +34,8 @@ cmake --build build --parallel
 # Each pricer prints price and wall time at N = 252, 500, 1000
 ./build/fft_pricer
 
-# Full benchmark (~1.5 min): writes benchmarks/results/*.csv and reference_price.txt
+# Full benchmark (~8 min; N up to 4000, median of 3 timings):
+# writes benchmarks/results/*.csv and reference_price.txt
 ./build/benchmark
 
 # Plots from the benchmark CSVs
@@ -63,17 +65,15 @@ All Python scripts write figures to `plots/figures/`. The PNGs committed directl
 
 Gatheral, Jaisson & Rosenbaum (2018) found that realized log-volatility of equity indices behaves like fBM with Hurst exponent $H \approx 0.1$. RFSV models this directly:
 
-$$\log \sigma_t = \nu \, W_t^H, \qquad dS_t = r S_t \, dt + \sigma_t S_t \, dZ_t,$$
+$$\log \sigma_t = \log \sigma_0 + \nu \, W_t^H, \qquad dS_t = r S_t \, dt + \sigma_t S_t \, dZ_t,$$
 
-where $W^H$ is fBM and $\nu$ is the vol-of-vol. Because $H < \tfrac{1}{2}$, increments of $W^H$ are negatively correlated, so volatility paths are "rough".
+where $W^H$ is fBM, $\sigma_0$ is the base volatility level, and $\nu$ is the vol-of-vol. Because $H < \tfrac{1}{2}$, increments of $W^H$ are negatively correlated, so volatility paths are "rough".
 
-Three simplifications matter when reading the numbers:
+Parameters live in `src/common/params.hpp` and `data/params.py` (a test keeps them in sync): $H = 0.10$, $\nu = 0.52$, $\sigma_0 = 0.2$, $S_0 = K = 100$, $T = 1$, $r = 0$. Three points matter when reading the numbers:
 
-- **No log-vol level.** With $\log \sigma_t = \nu W_t^H$ we get $\sigma_0 = 1$, i.e. 100% annualized volatility. That is why the at-the-money Asian price is $\approx 23.6$ on $S_0 = 100$. The IV validation script adds a level $\mu_0$ (see below).
-- **No spot-vol correlation** ($\rho = 0$). $Z$ is independent of $W^H$.
-- **Time is in years** ($T = 1$, $\Delta t = 1/N$). The hardcoded $\nu = 0.30$ is the value Gatheral et al. report with time measured in *days*. In year units the same roughness corresponds to $\nu \approx 0.3 \cdot 252^{0.1} \approx 0.52$, so the engine runs at a lower vol-of-vol than the paper's fit. The benchmarks are valid for any $\nu$, but keep this in mind when comparing prices to market data.
-
-Parameters live in `src/common/params.hpp`: $H = 0.10$, $\nu = 0.30$, $S_0 = K = 100$, $T = 1$, $r = 0$.
+- **$\nu$ is in year units.** Gatheral et al. report $\nu \approx 0.3$ with time measured in days. The engine measures time in years ($T = 1$, $\Delta t = 1/N$), where the same fit is $0.3 \cdot 252^{0.1} \approx 0.52$.
+- **The base level matters for Monte Carlo, not just for realism.** An earlier version had no $\sigma_0$ (so 100% volatility). At $\nu = 0.52$ that payoff is so heavy-tailed that a single path in a million carried 34% of the sample variance, and standard errors were meaningless. At $\sigma_0 = 0.2$ the payoff standard deviation is about 9.5 and stable across batches. (Strictly, the payoff variance is infinite for any lognormal volatility, since $\mathbb{E}[S^2]$ contains $\mathbb{E}[\exp(\Delta t\, e^{2\nu W})]$. In practice the divergence sits many standard deviations out and is never sampled.)
+- **No spot-vol correlation** ($\rho = 0$). $Z$ is independent of $W^H$, so the model produces a symmetric smile and no skew.
 
 ### Option
 
@@ -81,7 +81,7 @@ The arithmetic Asian call pays
 
 $$V = \max\left(\frac{1}{N}\sum_{n=1}^{N} S_{t_n} - K,\; 0\right).$$
 
-No closed form exists, so I estimate $p = e^{-rT}\,\mathbb{E}[V]$ by Monte Carlo over $M$ paths. The standard error is $\sigma_V / \sqrt{M}$. Here $\sigma_V \approx 61$ (measured from 200,000 paths), giving $\approx 0.6$ at $M = 10{,}000$. The payoff has a heavy right tail: $\sigma_0 = 1$ and volatility itself is lognormal.
+No closed form exists, so I estimate $p = e^{-rT}\,\mathbb{E}[V]$ by Monte Carlo over $M$ paths. The standard error is $\sigma_V / \sqrt{M}$. At the money $p \approx 5.32$ and $\sigma_V \approx 9.5$ (measured from $10^6$ paths), so $M = 10{,}000$ gives a standard error of $\approx 0.095$, about 1.8% of the price.
 
 ### Why sampling fBM is the bottleneck
 
@@ -99,9 +99,9 @@ Each sampler is a different way to apply a "square root" of $C$ to white noise.
 
 Build $C$, factor $C = LL^\top$ once in place with `Eigen::LLT<Eigen::Ref<MatrixXd>>` ($N^3/3$ flops, so $L$ overwrites $C$), then compute $W^H = Lz$ for each path through a lower-triangular view ($N^2$ flops).
 
-An earlier version multiplied by a dense copy of $L$, zeros included: twice the flops, and three $N \times N$ matrices in memory. Fixing that cut the $N = 1000$ run from 1.61 s to 1.13 s with unchanged prices.
+An earlier version multiplied by a dense copy of $L$, zeros included: twice the flops, and three $N \times N$ matrices in memory. Fixing that cut the $N = 1000$ run by about 30% with unchanged prices.
 
-At $M = 10{,}000$ the $O(MN^2)$ loop dwarfs the factorization. At $N = 1000$, construction takes 26 ms and the MC loop 1108 ms. The fitted exponent of 1.33 (not 2) comes from the $O(N)$ per-path work (Gaussian draws, $N$ calls to `exp`, payoff accumulation), which is still a large share of runtime at these $N$.
+The factorization is a small share of runtime: 24 ms of 1.15 s at $N = 1000$, and 0.74 s of 22.3 s at $N = 4000$. The $O(MN^2)$ loop dominates once $N^2$ outweighs the $O(N)$ per-path work (Gaussian draws, `exp` calls, payoff accumulation); see Results.
 
 ### 2. Circulant embedding + FFT: `src/fft/fft.hpp`
 
@@ -111,7 +111,7 @@ $$\gamma(k) = \frac{\Delta t^{2H}}{2}\left(|k+1|^{2H} + |k-1|^{2H} - 2|k|^{2H}\r
 
 The fGn covariance is therefore Toeplitz. I embed it in a $2N \times 2N$ circulant with first row $c = [\gamma(0), \ldots, \gamma(N{-}1), 0, \gamma(N{-}1), \ldots, \gamma(1)]$. The DFT diagonalizes the circulant, and its eigenvalues are $\lambda = \text{FFT}(c)$.
 
-Per path: scale complex white noise by $\sqrt{\lambda_j / 2N}$, apply one inverse FFT, take the first $N$ real parts as fGn, and cumulatively sum to get fBM. FFTW plans are created once and reused for every path.
+Per transform: scale complex white noise by $\sqrt{\lambda_j / 2N}$ and apply one inverse FFT. The first $N$ real parts and the first $N$ imaginary parts are two *independent* fGn samples (their cross-covariance vanishes because $\lambda_j = \lambda_{2N-j}$), and cumulative sums turn them into two fBM paths. Using both halves the Gaussian draws, which dominate the per-path cost; it cut the $N = 1000$ run from 1.04 s to 0.71 s. FFTW plans are created once and reused for every path.
 
 **Exactness.** The method is exact iff every $\lambda_j \geq 0$. I check this numerically (`data/validate_stability.py`), and for every $H \in [0.05, 0.501]$ and $N \leq 1008$ tested all eigenvalues are strictly positive, so no clipping ever happens. For $H \leq \tfrac{1}{2}$ this is expected: $\gamma(k) \leq 0$ at every nonzero lag, the case covered by Craigmile (2003). `fft.hpp` throws instead of clipping if a negative eigenvalue ever shows up.
 
@@ -127,13 +127,17 @@ The margin is thin for rough $H$. At $H = 0.1$, $\min \lambda / \gamma(0)$ is $0
 
 Approximate $C \approx U_k \,\text{diag}(s)\, U_k^\top$ with a randomized SVD (Halko, Martinsson & Tropp 2011, Algorithm 4.4: Gaussian sketch, $q = 2$ subspace iterations with re-orthonormalization, oversampling $p = 5$). Then sample with the $N \times k$ factor $L_k = U_k \,\text{diag}(\sqrt{s})$ at $O(Nk)$ per path.
 
-This sampler is *approximate*: paths have covariance $\nu^2 C_k$, not $\nu^2 C$. How good the approximation is depends on how fast the spectrum of $C$ decays, and at $H = 0.1$ it decays slowly:
+This sampler is *approximate*: paths have covariance $\nu^2 C_k$, not $\nu^2 C$. Two error measures ($N = 500$) tell very different stories:
 
 | Rank $k$ | 2 | 4 | 8 | 16 | 32 | 64 | 128 |
 |---|---|---|---|---|---|---|---|
-| $\lVert C - C_k \rVert_F / \lVert C \rVert_F$ ($N = 500$) | 8.5% | 5.4% | 3.5% | 2.5% | 1.9% | 1.5% | 1.2% |
+| Frobenius $\lVert C - C_k \rVert_F / \lVert C \rVert_F$ | 8.5% | 5.4% | 3.5% | 2.5% | 1.9% | 1.5% | 1.2% |
+| Variance lost $\text{tr}(C - C_k)/\text{tr}(C)$ | 37.9% | 32.8% | 28.3% | 24.4% | 20.8% | 17.2% | 13.2% |
+| Price error vs reference ($\pm 1.1\%$ at 2 SE) | −8.1% | −7.3% | −6.8% | −5.9% | −4.3% | −3.7% | −3.9% |
 
-The rSVD itself is not the problem: at every rank these errors are within about 2% (relative) of the optimal Eckart–Young truncation computed from the exact eigendecomposition. `plots/plot_structure.py` shows where the slow decay comes from. Well-separated off-diagonal blocks of $C$ compress extremely well even at $H = 0.1$: the singular values fall below 1% of $\sigma_1$ by rank 3. The full matrix does not, because the singularity of $|s-t|^{2H}$ sits on the diagonal. A hierarchical H-matrix compresses exactly the far-field blocks and keeps near-diagonal blocks dense, which makes it the natural next step (see Future work).
+The Frobenius norm is dominated by the few large eigenvalues and looks reassuring. But the price depends on how much path variance the sampler keeps, and a rank-$k$ truncation discards the long tail of small eigenvalues, which carry the short-scale roughness. At $k = 128$ it still drops 13% of the total variance (40% at the first time step). Less volatility means a lower price, so the sampler underprices at every rank, and the bias decays slowly, like the variance lost.
+
+The rSVD itself is not the problem: at every rank the Frobenius error is within about 2% (relative) of the optimal Eckart–Young truncation. `plots/plot_structure.py` shows where the slow decay comes from. Well-separated off-diagonal blocks of $C$ compress extremely well even at $H = 0.1$: the singular values fall below 1% of $\sigma_1$ by rank 3. The full matrix does not, because the singularity of $|s-t|^{2H}$ sits on the diagonal. A hierarchical H-matrix compresses exactly the far-field blocks and keeps near-diagonal blocks dense, which makes it the natural next step (see Future work).
 
 `price_freed_timed()` frees $C$ before the MC loop, so only $L_k$ (0.24 MB at $N = 1000$, $k = 32$) is resident during sampling.
 
@@ -141,40 +145,43 @@ The rSVD itself is not the problem: at every rank these errors are within about 
 
 ## Results
 
-All numbers come from `./build/benchmark` on an Apple M2 (`-O3 -march=native`, single-threaded) and from the CSVs in `benchmarks/results/`.
+All numbers come from `./build/benchmark` on an Apple M2 (`-O3 -march=native`, single-threaded) and from the CSVs in `benchmarks/results/`. Each timing is the median of 3 repeats with the same seed.
 
 ### Runtime
 
-| Method | $N = 252$ | $N = 500$ | $N = 1000$ | Fit $t = cN^\alpha$ |
-|---|---|---|---|---|
-| Cholesky | 0.18 s | 0.42 s | 1.13 s | $\alpha = 1.33$, $R^2 = 0.998$ |
-| FFT | 0.28 s | 0.52 s | 1.04 s | $\alpha = 0.95$, $R^2 = 0.999$ |
-| rSVD, $k = 32$ | 0.10 s | 0.20 s | 0.43 s | $\alpha = 1.02$, $R^2 = 1.000$ |
+| Method | $N = 64$ | $252$ | $1000$ | $2000$ | $4000$ |
+|---|---|---|---|---|---|
+| Cholesky | 0.040 s | 0.18 s | 1.15 s | 5.17 s | 22.25 s |
+| FFT | 0.045 s | 0.17 s | 0.71 s | 1.49 s | 2.91 s |
+| rSVD, $k = 32$ | 0.033 s | 0.10 s | 0.43 s | 0.94 s | 2.13 s |
 
-Timings are from a single run; back-to-back repeats varied by up to about 15%.
+A single power law fits FFT and rSVD well ($\alpha = 1.02$ for both, $R^2 \geq 0.995$) but not Cholesky ($\alpha = 1.52$, $R^2 = 0.978$), whose curve bends. Local exponents between successive $N$ show why:
 
-The FFT method barely beats Cholesky at these sizes. Its inverse FFT is cheap (about 8 µs per path at $N = 1000$), but it draws $4N$ Gaussians per path against Cholesky's $N$, and those draws alone take 60–70 µs. On top of that, the price-path work is identical for all three methods. The asymptotic gap is real ($\alpha = 1.33$ vs $0.95$) but mostly hidden at $N \leq 1000$.
+| Method | 64→128 | 128→252 | 252→500 | 500→1000 | 1000→2000 | 2000→4000 |
+|---|---|---|---|---|---|---|
+| Cholesky | 0.95 | 1.22 | 1.29 | 1.44 | 2.17 | 2.10 |
+| FFT | 0.92 | 1.02 | 1.04 | 1.02 | 1.06 | 0.97 |
 
-FFT's theoretical $\log N$ factor is invisible here. Over a $4\times$ range in $N$, $\log_2 N$ grows only from 8.0 to 10.0, and a 25% drift is within the noise of a three-point fit. Resolving it would need a range of $100\times$ or more. Construction is under 10% of runtime for every method at $M = 10{,}000$ (`plots/construction_breakdown.png`).
+At small $N$ the $O(N)$ per-path work hides the $N^2$ mat-vec. Above $N \approx 1000$ the mat-vec dominates and the exponent slightly exceeds 2, because $L$ no longer fits in cache (next section).
+
+FFT's $\log N$ factor stays invisible even over this $64\times$ range: its MC cost per path per time step is flat at 67–73 ns (`plots/per_path_cost.png`). The transform is a small part of each path; random number generation and the price-path arithmetic dominate, and those are $O(N)$. Construction is negligible for FFT and at most a few percent for Cholesky, but 23% of rSVD's runtime at $N = 4000$ (`plots/construction_breakdown.png`).
 
 ### Memory and cache
 
-| Method ($N = 1000$) | Resident during MC loop | Notes |
+| Method ($N = 1000$) | Resident during MC loop | Measured lifetime peak |
 |---|---|---|
-| Cholesky | $8N^2 = 7.6$ MB | One matrix: $L$ overwrites $C$ in place (only its lower half is read per path) |
-| FFT | $\approx 0.08$ MB | $2N$ scale factors and two length-$2N$ complex FFT buffers |
-| rSVD, $C$ held | 7.6 MB + $L_k$ | |
-| rSVD, $C$ freed | 0.24 MB | $L_k$ only ($8Nk$ bytes) |
+| Cholesky | $8N^2 = 7.6$ MB ($L$ overwrites $C$; the lower half is read per path) | 9.7 MB |
+| FFT | 0.08 MB ($2N$ scale factors, two length-$2N$ complex buffers) | 0.4 MB |
+| rSVD, $C$ held | 7.6 MB + $L_k$ | 10.7 MB |
+| rSVD, $C$ freed | 0.24 MB ($L_k$ only, $8Nk$ bytes) | 12.8 MB |
 
-The relevant cache on the M2 is the 16 MB L2 shared by the performance cores; the M2 has no L3. $L$ fits in that L2 for all $N \leq 1000$. The `est_bandwidth_GBs` column (14, 24, and 35 GB/s for the three $N$) is $4N(N+1) M$ bytes (the lower triangle of $L$, once per path) divided by wall time. It is an effective rate for streaming $L$, **not** measured DRAM traffic, so it does not by itself show that Cholesky is DRAM-bound at these sizes.
+The measured peak (`measured_peak_mb`) comes from running each method in a forked child process and reading its peak RSS via `wait4`, minus that of an idle child. It exceeds the dominant-array size because of allocator and matrix-multiply workspace. Freeing $C$ shrinks what is resident during the MC loop, but not the lifetime peak, since $C$ must exist while $L_k$ is built. At $N = 4000$ the Cholesky and rSVD peaks reach about 145–160 MB, while FFT needs 1.1 MB.
 
-The `measured_peak_mb` column is a true lifetime peak: each method runs once in a forked child process, and the benchmark reads the child's peak RSS (via `wait4`) minus that of an idle child. At $N = 1000$ it gives 11.0 MB for Cholesky, 0.5 MB for FFT, and 14.0 / 10.7 MB for rSVD with $C$ held / freed. These exceed the dominant-array sizes because of allocator and matrix-multiply workspace. Freeing $C$ shrinks what is resident during the MC loop but not the lifetime peak, since $C$ must exist while $L_k$ is built.
+The relevant cache on the M2 is the 16 MB L2 shared by the performance cores; the M2 has no L3. $L$ fits in it up to $N \approx 1450$. The `est_bandwidth_GBs` column ($4N(N+1)M$ bytes, the lower triangle of $L$ once per path, divided by wall time) rises to 35 GB/s at $N = 1000$ and then *falls*, to 31 GB/s at $N = 2000$ and 29 GB/s at $N = 4000$, once $L$ spills out of cache. That turnover is the signature of the loop becoming memory-bandwidth bound. It is still an effective rate, not a direct measurement of DRAM traffic.
 
-### Accuracy of the low-rank sampler
+### Reference price
 
-The reference price is $p_\text{ref} = 23.582$ at $N = 500$: the average of Cholesky (23.622) and FFT (23.542), each with 500,000 paths. Each estimate has a standard error of $\approx 0.09$. Their difference ($0.08$) is well under the standard error of a difference ($0.12$), consistent with both samplers being exact. The pooled reference has a standard error of $\approx 0.06$.
-
-`error_vs_rank.csv` also reports the rSVD price error at $M = 10{,}000$. The errors range from 0.05 to 0.74, all within about $1.2$ MC standard errors ($\approx 0.6$), so no rank's price bias is statistically resolved at this $M$. The noise-free Frobenius error above is the meaningful accuracy metric. Resolving price bias of order 0.1 would need $M \gtrsim 10^6$ per rank.
+The reference is $p_\text{ref} = 5.3144$ at $N = 500$: the average of Cholesky (5.3195) and FFT (5.3093), each with 500,000 paths. Each estimate has a standard error of $\approx 0.013$, and their difference ($0.010$) is about half the standard error of a difference, consistent with both samplers being exact.
 
 ### Numerical stability (`data/validate_stability.py`)
 
@@ -190,23 +197,21 @@ These use `data/rfsv_model.py`, a vectorized numpy port of the FFT sampler that 
 
 | Script | What it does | Output (`plots/figures/`) |
 |---|---|---|
-| `data/validate_convergence.py` | Price $\pm 1\sigma$ vs $M$ over 5 seeds; checks $\sigma \propto M^{-1/2}$ | `convergence.png` |
-| `data/validate_asian.py` | RFSV Asian price vs strike for several $H$, against the Lévy (1992) approximation | `validate_asian.png` |
+| `data/validate_convergence.py` | Price $\pm 1\sigma$ vs $M$ over 20 seeds against a same-grid $10^6$-path reference; checks $\sigma \propto M^{-1/2}$ | `convergence.png` |
+| `data/validate_asian.py` | Price vs strike for several $H$ against Lévy (1992) and exact GBM; roughness premium at fixed and at variance-matched $\nu$ | `validate_asian.png` |
 | `plots/plot_sensitivity.py` | ATM price over $H \times \nu$; price vs strike for $H \in \{0.05, \ldots, 0.5\}$ | `sensitivity_surface.png`, `sensitivity_strike.png` |
 | `data/validate_iv.py` | RFSV smile vs live SPY option IVs (needs internet; `--M 20000`) | `validate_iv.png` |
 | `data/validate_stability.py` | FFT eigenvalues vs $H$; $\kappa(L_k)$ vs $k$; $\kappa(C)$ vs $N$ | `stability_report.png` |
 | `plots/plot_structure.py` | Toeplitz structure of fGn; off-diagonal vs full spectrum of $C$ | `structure_analysis.png` |
 | `data/profile_memory.py` | `tracemalloc` peak of the numpy fBM sampler vs $(N, M)$ | `memory_profile.png` |
 
-Caveats to keep in mind when reading these figures:
+All comparisons between configurations (different $H$, $\nu$ or $K$) use common random numbers, so differences are far more precise than the absolute prices. Key results:
 
-- **Lévy is not a precise baseline at 100% vol.** At $\sigma = 1$, $K = 100$, Lévy's lognormal approximation gives 23.72, but exact discrete GBM by Monte Carlo gives $22.29 \pm 0.12$, so Lévy overprices by about 6%. The closeness of RFSV ($\approx 23.6$) to Lévy is a coincidence of two effects. Use a $\nu = 0$ Monte Carlo run as the GBM baseline.
-- **Sensitivity sweep uses common random numbers.** Every $(H, \nu)$ cell reuses the same seed, so cell-to-cell differences are precise. At $\nu = 0.30$ the ATM price falls from 23.60 ($H = 0.10$) to 23.17 ($H = 0.50$). An earlier version used an independent seed per cell, and its differences were pure noise.
-- **Lower $H$ at fixed $\nu$ is not purely "more roughness".** $\text{Var}(\nu W_t^H) = \nu^2 t^{2H}$ is *larger* for small $H$ when $t < 1$. Price differences across $H$ therefore mix a variance effect with a roughness effect. Isolating roughness would need $\nu$ rescaled to match integrated variance.
-- **The IV comparison can only test smile curvature.** With $\rho = 0$ the model smile is symmetric in log-moneyness, so it cannot reproduce SPY's skew. A level $\mu_0$ ($\log \sigma_t = \mu_0 + \nu W_t^H$) is calibrated to the ATM market price. SPY options are American, which is treated as negligible for calls.
-- **IV pricing uses moment matching.** All strikes share one set of paths, and the simulated $S_T$ is rescaled so its sample mean equals the forward. Without the rescaling, a 0.05% sampling error in the forward tilted the model curve into a fake upward skew. Deep-ITM market IVs are inflated by the $r = 0$, no-dividend assumption and are shown off scale.
-- `validate_convergence.py` compares against the $N = 500$ C++ reference while simulating at $N = 252$. These are different quantities (the average is over a different grid), so the reference line is only approximate.
-- `validate_asian.py` derives the price-path seed as `seed + 1`, which overlaps another run's log-vol seed. Each estimate stays unbiased, but errors across those runs are correlated.
+- **Convergence.** With 20 seeds the standard deviation of the estimate falls with fitted slope $-0.488$ ($R^2 = 0.986$) against the theoretical $-0.5$. The same-grid reference ($N = 252$) is $5.3252 \pm 0.0095$.
+- **Lévy is accurate at realistic volatility.** At the money it gives 4.625, against $4.606 \pm 0.027$ for exact GBM by Monte Carlo. (At the old 100% volatility it overpriced by about 6%.)
+- **Roughness premium.** At the money, $p(H{=}0.10) - p(H{=}0.50) = 0.468 \pm 0.008$ at $\nu = 0.52$. But lower $H$ also raises the expected integrated variance $\mathbb{E}\int_0^T \sigma_t^2\,dt$ by 19%. Matching it (by solving for $\nu = 0.651$ at $H = 0.5$) leaves $0.330 \pm 0.009$, so about 70% of the premium is due to roughness itself. The premium peaks at the money and is positive at every strike from 80 to 120.
+- **Sensitivity.** At $\nu = 0.52$ the ATM price falls from 5.37 ($H = 0.05$) to 4.74 ($H = 0.5$). The gap between $H = 0.1$ and $H = 0.5$ vanishes at small $\nu$ (0.02 at $\nu = 0.1$) and grows to 0.94 at $\nu = 0.7$.
+- **IV smile.** For a snapshot taken October 2, 2026 the model smile is a symmetric U with its minimum at the money: curvature, but no skew. SPY's smile falls steeply below the money. With $\rho = 0$ the model cannot produce skew, so the comparison tests curvature only. Two implementation details matter here. All strikes share one set of paths, and the simulated $S_T$ is rescaled so that its sample mean equals the forward; without that, a 0.05% forward error tilted the model curve into a fake skew. Deep in-the-money market IVs are inflated by the $r = 0$, no-dividend assumption and are shown off scale.
 
 ---
 
@@ -223,15 +228,14 @@ uv run python data/calibrate.py --source yfinance
 uv run python data/calibrate.py --file data/raw/oxfordmanrealizedvolatilityindices.csv --ticker .SPX
 ```
 
-The yfinance proxy recovers $H$ close to the published $0.1$. Its $\nu$ is inflated by measurement noise in weekly squared-return RV, which is why `params.hpp` keeps the literature values rather than this fit. The Oxford-Man library is no longer distributed from its original URL; place a copy in `data/raw/` if you have one.
+The yfinance proxy recovers $H$ close to the published $0.1$. Its $\nu$ is inflated by measurement noise in weekly squared-return RV, which is why the parameter files keep the literature value ($0.3$ in days, i.e. $0.52$ in years) rather than this fit. The Oxford-Man library is no longer distributed from its original URL; place a copy in `data/raw/` if you have one.
 
 ---
 
 ## Future work
 
 - **True hierarchical matrix.** Use a recursive block tree with H-Cholesky (Hackbusch 1999). The structure analysis shows the far-field blocks are low rank even at $H = 0.1$, so this targets exactly what limits the global rSVD.
-- **Two fGn paths per inverse FFT.** The real and imaginary parts of the transform are independent fGn samples (checked numerically), but the pricer discards the imaginary part. Using both halves the Gaussian draws per path, which is the FFT pricer's dominant cost.
-- **Wider $N$ range** ($64$ to $16{,}384$) to resolve FFT's $\log N$ factor and test rSVD rank requirements.
+- **Larger $N$.** Beyond $N = 4000$, Cholesky's $O(N^2)$ memory (8 GB at $N = 32{,}768$) becomes the binding limit, while FFT stays under 2 MB.
 - **Spot-vol correlation $\rho < 0$**, to produce a skew and enable a real IV comparison.
 - **Variance reduction.** The geometric Asian call (closed form) is a strong control variate.
 - **Hybrid scheme** (Bennedsen, Lunde & Pakkanen 2017). This applies to Volterra/rough-Bergomi models, where a singular kernel must be discretized. It does *not* improve the present model: circulant embedding already samples fGn exactly on the grid, so there is no discretization error to correct.
@@ -247,7 +251,8 @@ src/cholesky/      cholesky.hpp + cholesky_pricer.cpp
 src/fft/           fft.hpp + fft_pricer.cpp
 src/rsvd/          lowrank.hpp (sampler), rsvd.hpp (Halko et al. Alg. 4.4), rsvd_pricer.cpp
 benchmarks/        benchmark.cpp -> results/{time_vs_N,error_vs_rank}.csv, reference_price.txt
-data/              calibrate.py, rfsv_model.py (numpy engine), validate_*.py, profile_memory.py
+data/              params.py (shared model parameters), calibrate.py, rfsv_model.py (numpy engine),
+                   validate_*.py, profile_memory.py
 plots/             plot_scaling.py, plot_structure.py, plot_sensitivity.py; figures/ (generated)
 report-files/      LaTeX report (main.tex + sec*.tex)
 ALGORITHMS.md      Line-by-line walkthrough of the C++ samplers

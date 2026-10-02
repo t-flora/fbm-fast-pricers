@@ -65,9 +65,10 @@ into a circulant; circulant matrices are diagonalized by the DFT
         code checks the sign and throws if any is negative.
         $O(N\log N)$ flops, computed once.
   \item Pre-compute $s_j = \sqrt{\lambda_j / (2N)}$ for all $j$.
-  \item For each path: draw $W \in \mathbb{C}^{2N}$ whose real and imaginary parts
-        are i.i.d.\ $\mathcal{N}(0,1)$, scale $W_j \leftarrow s_j W_j$, apply inverse FFT, take the real
-        part of the first $N$ entries to obtain fGn increments, cumsum to fBM.
+  \item For each pair of paths: draw $W \in \mathbb{C}^{2N}$ whose real and imaginary
+        parts are i.i.d.\ $\mathcal{N}(0,1)$, scale $W_j \leftarrow s_j W_j$, and apply
+        the inverse FFT.  The real and the imaginary parts of the first $N$ entries
+        are two independent sets of fGn increments; cumsum each to fBM.
         $O(N\log N)$ flops per path.
 \end{enumerate}
 FFTW plans for the forward and inverse transforms are created once before the Monte
@@ -102,11 +103,12 @@ per-path cost from $O(N^2)$ to $O(Nk)$.
 \end{enumerate}
 
 \paragraph{What it sacrifices.}
-Exactness.  The sampled paths have covariance $\nu^2 C_k$ rather than $\nu^2 C$,
-with the error controlled by rank $k$.  Section~\ref{sec:errorrank} shows that the
-relative Frobenius error falls slowly, from $8.5\%$ at $k = 2$ to $1.2\%$ at
-$k = 128$, because the spectrum of the full matrix decays only algebraically
-(Figure~\ref{fig:structure}(d)).
+Exactness.  The sampled paths have covariance $\nu^2 C_k$ rather than $\nu^2 C$, so
+they are missing the variance $\nu^2\,\mathrm{tr}(C - C_k)$ held by the discarded
+eigenvalues.  Because the spectrum of the full matrix decays only algebraically
+(Figure~\ref{fig:structure}(d)), that loss is large: 21\% of the total path variance
+at $k = 32$ and still 13\% at $k = 128$.  Less volatility means lower option prices,
+and Section~\ref{sec:errorrank} shows the sampler underpricing by 4--8\%.
 
 This is a global rSVD, a single rank-$k$ approximation of the entire
 $N\times N$ matrix.  It must allocate rank budget to both the smooth far-off-diagonal

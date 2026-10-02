@@ -12,16 +12,15 @@ The RFSV model (Gatheral, Jaisson & Rosenbaum 2014) says
 that log-volatility evolves as a fractional Brownian motion:
 
 ```
-log σ_t = ν · W_t^H
+log σ_t = log σ_0 + ν · W_t^H
 ```
 
 where `W_t^H` is fBM with Hurst exponent `H ≈ 0.10` (empirically estimated from
-realized variance data). The full Gatheral RFSV model includes a log-vol drift $\mu$:
-$\log\sigma_t = \mu + \nu W_t^H$. This implementation sets $\mu = 0$, so
-$\sigma_0 = e^{\mu + \nu W_0^H} = 1$ — a deliberate simplification giving 100% base
-annualized volatility (consistent with the reference price $p_\text{ref} = 23.58$).
-When comparing against market data, $\mu_0 = \log\sigma_\text{target}$ is calibrated
-to match the ATM implied volatility level.
+realized variance data), base level $\sigma_0 = 0.2$, and vol-of-vol $\nu = 0.52$ (Gatheral
+et al.'s $0.3$ with time in days, converted to the engine's years). The samplers below
+produce $\nu W^H$; the shared payoff code multiplies by $\sigma_0$. An earlier version had no
+$\sigma_0$ (100% volatility), which made the payoff so heavy-tailed that MC error bars were
+meaningless. For the IV comparison, $\log\sigma_0$ is instead calibrated to the ATM market price.
 
 The key difficulty simulating fBM paths is that they're correlated across
 all time steps; fBM is non-Markovian. In standard Brownian motion, increments $W_{t+1} - W_t$ are
@@ -37,7 +36,8 @@ Each of the three algorithms below solves this sampling problem at a different
 computational cost.
 
 The shared setup is in `src/common/`:
-- `params.hpp`: `H=0.10`, `ν=0.30`, `S0=100`, `K=100`, `T=1`, `r=0`
+- `params.hpp`: `H=0.10`, `nu=0.52`, `sigma0=0.20`, `S0=100`, `K=100`, `T=1`, `r=0`
+  (mirrored by `data/params.py`; a test keeps them in sync)
 - `covariance.hpp`: the kernel $C(t,s) = \frac{1}{2}(|t|^{2H} + |s|^{2H} - |t-s|^{2H})$
 - `asian_payoff.hpp`: path → prices → `max(mean(S) - K, 0)`
 
@@ -98,20 +98,20 @@ the vol process). `log_vol_to_prices` steps $S_i = S_{i-1} \cdot \exp\!\bigl((r 
 
 | Phase | Cost | $N=252$ | $N=1000$ |
 |-------|------|---------|----------|
-| Factorize $C$ | $O(N^3)$ | ~1.5ms | ~26ms |
-| MC loop ($M$ paths) | $O(MN^2)$ | ~180ms | ~1110ms |
+| Factorize $C$ | $O(N^3)$ | ~1.2ms | ~24ms |
+| MC loop ($M$ paths) | $O(MN^2)$ | ~175ms | ~1130ms |
 
 The factorization cost is dominated by the per-path cost at $M = 10{,}000$.
-The fitted exponent $\alpha \approx 1.33$ (from `benchmarks/results/time_vs_N.csv`)
-reflects the $O(MN^2)$ regime, but the pure $O(N^2)$ per-path cost would predict $\alpha \approx 2$.
-The observed value is lower because each MC iteration also carries $O(N)$ overhead — $N$ Gaussian
-draws, $N$ exponentials to recover $\sigma$ from $\log\sigma$, and $N$ payoff steps — which
-dampens the effective exponent to 1.33 over the tested range $N \in \{252, 1000\}$.
+A single power law fits poorly ($\alpha \approx 1.52$, $R^2 = 0.978$ over $N = 64$ to 4000) because the
+curve bends. The local exponent rises from about 1.0 at small $N$ to 2.1 above $N = 1000$. At small
+$N$ each MC iteration is dominated by $O(N)$ work ($N$ Gaussian draws, $2N$ exponentials, $N$ payoff
+steps). Once $N^2$ takes over, the exponent slightly exceeds 2 because `L` spills out of the 16 MB
+cache at $N \approx 1450$ and the loop becomes memory-bandwidth bound.
 
 An earlier version copied `L` into a separate dense `MatrixXd` and computed `L * z`, a
 $2N^2$-flop dense mat-vec that also multiplied the zero upper triangle. Switching to the
 in-place factorization and triangular view halved the mat-vec (about 115 µs to 62 µs at
-$N = 1000$) and cut the $N = 1000$ run from 1.61 s to 1.13 s, with unchanged prices.
+$N = 1000$) and cut the $N = 1000$ run by about 30%, with unchanged prices.
 
 ### Memory
 One $N \times N$ matrix is alive during the MC loop, because `L` overwrites `C`: $8N^2$ bytes,
@@ -214,7 +214,7 @@ the inverse DFT of the eigenvalues, i.e. the circulant's first row. For $|n - m|
 exactly $\gamma(|n-m|)$. The same calculation gives $\operatorname{Im} x$ the same covariance, and
 $\operatorname{Cov}(\operatorname{Re} x_n, \operatorname{Im} x_m) = \sum_j (\lambda_j/M)\sin(\cdot) = 0$
 because $\lambda_j = \lambda_{M-j}$. So the real and imaginary parts are two *independent* fGn
-samples; the current code uses only the real part.
+samples. `FbmSampler::sample_pair()` uses both, giving two fBM paths per transform.
 
 The `/ M` comes from FFTW's unnormalized convention, and the `std::max(..., 0.0)` is defensive
 (the eigenvalues are already checked to be non-negative).
@@ -238,21 +238,22 @@ reconstructs the fBM path $W_{t_n} = \sum_{j \leq n} \delta W_j$. Then $\log\sig
 | Per-path IFFT | $O(N \log N)$ |
 | Full MC | $O(MN \log N)$ |
 
-At $N = 1000$, FFT is only about 9% faster than Cholesky (1.04 s vs 1.13 s), even though a
-size-$2N$ complex FFT is about $10^5$ flops against $N^2 = 10^6$ for the triangular mat-vec.
-A sharp reader will ask why a $10\times$ cheaper sampling step barely shows up in wall-clock
-time. Two reasons, both Amdahl's Law:
+At $N = 1000$, FFT is $1.6\times$ faster than Cholesky (0.71 s vs 1.15 s), and $7.6\times$ at
+$N = 4000$. That is less than the arithmetic suggests at moderate $N$: a size-$2N$ complex FFT is
+about $10^5$ flops against $N^2 = 10^6$ for the triangular mat-vec. Two reasons, both Amdahl's Law:
 
 1. The price-path simulation ($N$ Gaussian draws for the innovations, $2N$ exponentials, and
    the payoff accumulation) is identical for every method and is a large share of each path.
-2. The FFT sampler draws $4N$ Gaussians per path (real and imaginary parts of $2N$ complex
-   variates) against $N$ for Cholesky. Measured in isolation at $N = 1000$, those draws take
-   60–70 µs, while the inverse FFT itself takes about 8 µs.
+2. Random numbers dominate the FFT sampler. Each transform needs $4N$ Gaussians (real and
+   imaginary parts of $2N$ complex variates); measured in isolation at $N = 1000$, those draws
+   take 60–70 µs, while the inverse FFT itself takes about 8 µs.
 
-The cheapest win is therefore not a faster FFT but fewer random numbers. The real and
+The cheapest win was therefore not a faster FFT but fewer random numbers per path. The real and
 imaginary parts of the IFFT output are *independent* fGn samples (their cross-covariance
-vanishes because $\lambda_j = \lambda_{2N-j}$), so using both would give two paths per transform.
-The fitted exponent is $\alpha \approx 0.95$.
+vanishes because $\lambda_j = \lambda_{2N-j}$), so the pricer takes two paths per transform. That
+cut the $N = 1000$ run from 1.04 s to 0.71 s.
+The fitted exponent is $\alpha \approx 1.02$, and the per-path cost per time step is flat
+(67–73 ns) from $N = 64$ to 4000, so the $\log N$ factor never becomes visible.
 
 **Memory**: during the MC loop the sampler holds the $2N$ scale factors and two length-$2N$
 complex buffers for the inverse FFT, not an $N \times N$ matrix. At $N = 1000$ that is 80 KB
@@ -394,7 +395,7 @@ between the theoretical $O(N^2)$ and $O(Nk)$ memory profiles visible in
 
 This does not undercut the algorithm's advantage. The setup is $O(N^2 k)$ vs Cholesky's $O(N^3)$ — a factor of $N/k$ cheaper — and the per-path MC loop is $O(Nk)$ vs $O(N^2)$, so the full cost $O(N^2 k + MNk)$ is substantially less than Cholesky's $O(N^3 + MN^2)$ for any $k \ll N$.
 
-Fitted exponent $\alpha \approx 1.05$ (close to linear in $N$ at fixed $k = 32$). The crossover
+Fitted exponent $\alpha \approx 1.02$ (close to linear in $N$ at fixed $k = 32$). The crossover
 point vs Cholesky: at $k = 32$, $O(MN \cdot 32) < O(MN^2)$ when $32 < N$, which is always true.
 
 ### Accuracy tradeoff
@@ -402,24 +403,26 @@ point vs Cholesky: at $k = 32$, $O(MN \cdot 32) < O(MN^2)$ when $32 < N$, which 
 The approximation error depends on how many singular values of `C` we keep.
 From `benchmarks/results/error_vs_rank.csv`:
 
-| rank k | Frobenius error | Price error |
-|--------|----------------|-------------|
-| 4  | 5.4% | 0.05 |
-| 16 | 2.5% | 0.13 |
-| 32 | 1.9% | 0.34 |
-| 64 | 1.5% | 0.61 |
+| rank k | Frobenius error | Variance lost $\text{tr}(C - C_k)/\text{tr}(C)$ | Price error |
+|--------|----------------|------|-------------|
+| 2   | 8.5% | 37.9% | −8.1% |
+| 8   | 3.5% | 28.3% | −6.8% |
+| 32  | 1.9% | 20.8% | −4.3% |
+| 128 | 1.2% | 13.2% | −3.9% |
 
-The price error trend is counter-intuitive and deserves careful reading. The Frobenius error
-monotonically decreases with rank, as expected. The price error does the opposite, which
-is not simply MC noise: a clean monotone increase across four doublings is a systematic effect.
-The most likely cause is that at low rank the truncation bias moves the H-matrix price
-*toward* the reference by accident — heavy smoothing of the volatility paths alters the
-distribution of payoffs in a way that happens to compensate, giving a deceptively small
-price error at $k = 4$ despite the large matrix approximation error. As rank increases and
-the paths become truer to the actual fBM distribution, this accidental cancellation
-disappears, and the price error reflects the remaining MC variance (~$\sigma_V/\sqrt{M} \approx 0.35$).
-The Frobenius error is the reliable measure of approximation quality; price error at low
-rank should not be read as evidence of a good approximation. This is why we need both metrics.
+($N = 500$, 100,000 paths per rank, price standard error $\approx 0.6\%$.)
+
+The Frobenius error looks reassuring, but it is the wrong metric for pricing. It is dominated by
+the few large eigenvalues of `C`. The price depends instead on how much *variance* the sampled
+paths carry, and a rank-$k$ truncation throws away the long tail of small eigenvalues, which hold
+the short-scale, rough part of the path. At $k = 128$ that is still 13% of the total variance
+(40% of the variance at the first time step). Less volatility means a lower price, so the
+low-rank sampler underprices at every rank, and the bias decays slowly, like the variance lost.
+
+An earlier version of this guide read the noisy price errors of a 10,000-path run as a
+"systematic" accidental cancellation. That was wrong: those errors were all within about one
+standard error of zero. With 100,000 paths and a well-behaved payoff (base volatility 0.2 instead
+of 1.0), the bias is resolved and has the expected sign.
 
 ---
 
@@ -428,11 +431,11 @@ rank should not be read as evidence of a good approximation. This is why we need
 All three algorithms produce a `log_vol` vector and call the same payoff function:
 
 ```cpp
-// log_vol[i] = log σ_i
+// log_vol[i] = nu * W^H(t_i);  sigma_i = sigma0 * exp(log_vol[i])
 // Step 1: simulate price path
 double S = S0;
 for (int i = 0; i < N; ++i) {
-    double sigma = std::exp(log_vol[i]);
+    double sigma = sigma0 * std::exp(log_vol[i]);
     S *= std::exp((r - 0.5*sigma*sigma)*dt + sigma*sqrt(dt)*Z[i]);
     prices[i] = S;
 }
@@ -459,7 +462,7 @@ price analytically — no closed-form exists under stochastic volatility.
 | **Exact?** | Yes | Yes (all circulant eigenvalues verified $> 0$) | No (truncation error) |
 | **Key paper** | — | Wood & Chan 1994 | Halko et al. 2011 |
 | **Bottleneck at $N=1000$** | $N^2$ mat-vec per path | Shared $O(N)$ price-path work | Shared $O(N)$ price-path work |
-| **Fitted $\alpha$** | 1.33 | 0.95 | 1.02 |
+| **Fitted $\alpha$** (N = 64–4000) | 1.52 global; local 1.0 → 2.1 | 1.02 | 1.02 |
 
 The FFT method wins on memory ($O(N)$ vs $O(N^2)$) and is exact on the grid, so it is the recommended
 method for production use. The global rSVD method is valuable pedagogically because it

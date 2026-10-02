@@ -45,15 +45,17 @@ matrix: a circulant-embedding FFT method ($O(N \log N)$ per path, exploiting the
 stationarity of fBM increments), and a global randomized SVD method ($O(Nk)$ per
 path, exploiting low-rank structure).  We show that the circulant embedding is exact
 for every $H \leq \nicefrac{1}{2}$, with smallest eigenvalue
-$\Delta t^{2H}(N^{2H} - (N-1)^{2H})$ in closed form.  Over
-$N \in \{252, 500, 1000\}$ the Cholesky and FFT costs scale as $N^{1.33}$ and
-$N^{0.95}$, but at $N = 1000$ the FFT method is only $\approx 9\%$ faster than a
-triangular Cholesky baseline, because random number generation rather than the
-covariance factor dominates its per-path cost.  The rank-32 rSVD method is
-$2.7\times$ faster than Cholesky at $N = 1000$, but its covariance error decays
-slowly, from $1.9\%$ at $k = 32$ to $1.2\%$ at $k = 128$, because the rough kernel's
-singularity lies on the diagonal, where a global low-rank approximation cannot
-isolate it.
+$\Delta t^{2H}(N^{2H} - (N-1)^{2H})$ in closed form.  Over $N$ from 64 to 4000, the FFT
+and rSVD costs grow linearly in $N$, while the Cholesky exponent rises from about 1 to
+2.1 as the $N^2$ mat-vec takes over and its factor outgrows the cache.  The FFT method
+overtakes Cholesky at $N \approx 250$ and is $7.6\times$ faster at $N = 4000$; drawing
+two independent paths from each inverse transform was essential, since random number
+generation, not the transform, dominates its per-path cost.  The rank-32 rSVD method is
+$10\times$ faster than Cholesky at $N = 4000$ but underprices by $4$--$8\%$ at every
+rank tested.  That bias follows the fraction of path variance the truncation discards
+($13\%$ even at $k = 128$), which the usual Frobenius error ($1.2\%$) badly understates.
+Finally, a variance-matched comparison shows that about 70\% of the rough-volatility
+premium on the at-the-money Asian price is due to roughness itself.
 \end{abstract}
 
 \input{sec1-intro}

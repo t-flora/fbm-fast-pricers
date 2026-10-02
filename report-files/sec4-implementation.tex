@@ -127,9 +127,24 @@ $\approx 115\,\mu$s for the dense one.  End to end, the Cholesky run at $N = 100
 $M = 10{,}000$ drops from $1.61$~s to $1.13$~s, and resident memory drops from
 $3 \times 7.6$~MB to $7.6$~MB.  Prices are unchanged to six significant figures,
 since the random draws and the arithmetic on the non-zero entries are the same.
-This correction matters for the comparison in §\ref{sec:timing}: against the
-dense baseline the FFT method looked $1.5\times$ faster at $N = 1000$, but against
-the fair one it is only $\approx 9\%$ faster.
+This correction matters for the comparison in §\ref{sec:timing}: against the dense
+baseline the FFT method looked $1.5\times$ faster at $N = 1000$, but against the fair
+one it was only $\approx 9\%$ faster, until the change in §\ref{sec:two-paths}
+restored a $1.6\times$ advantage.
+
+\subsection{Two fGn paths per inverse FFT}
+\label{sec:two-paths}
+
+After the Cholesky fix, the FFT pricer barely beat it at $N = 1000$, and profiling
+showed why: its per-path cost was dominated not by the transform but by random
+number generation.  In isolation, the $4N$ Gaussian draws for one transform (real
+and imaginary parts of $2N$ complex variates) take $\approx 60$--$70\,\mu$s, against
+$\approx 8\,\mu$s for the size-$2N$ inverse FFT.  The first version used only the real
+part of each transform.  As §\ref{sec:circulant} shows, the imaginary part is a
+second, independent fGn path, so \texttt{FbmSampler::sample\_pair()} now returns both.
+This halves the Gaussian draws per path and cut the $N = 1000$ run from $1.04$~s to
+$0.71$~s.  The test suite (§\ref{sec:tests}) checks that the imaginary-part paths have
+the fBM covariance and are uncorrelated with the real-part paths.
 
 \subsection{Piecewise-constant volatility convention}
 \label{sec:volconv}
@@ -138,7 +153,7 @@ All three pricers share a single GBM step kernel (\texttt{asian\_payoff.hpp}):
 \begin{equation}
   S_i = S_{i-1}\exp\!\bigl((r - \tfrac{1}{2}\sigma_i^2)\,\Delta t
         + \sigma_i\sqrt{\Delta t}\,Z_i\bigr),
-  \qquad \sigma_i = e^{\log\sigma[i]},
+  \qquad \sigma_i = \sigma_0\, e^{\log\sigma[i]},
 \end{equation}
 where $\log\sigma[i] = \nu W_{t_i}^H$ is the fBM log-vol evaluated at the
 end of the $i$-th interval (right-endpoint convention), and
@@ -170,22 +185,31 @@ three headers in one translation unit without ODR violations, while each
 \texttt{\_pricer.cpp} standalone executable also includes its header and
 calls \texttt{price()} directly.
 
+\subsection{Testing}
+\label{sec:tests}
+
+Several results in earlier drafts of this report came from bugs that nothing
+checked, so both engines now have test suites that run in a few seconds and gate
+the benchmark pipeline.  The C++ suite (\texttt{tests/test\_samplers.cpp}, 21 checks)
+verifies that $LL^\top = C$ to $10^{-15}$; that every circulant eigenvalue minimum
+matches the closed form~\eqref{eq:lambda-min} to $10^{-8}$ for $H \in
+\{0.05, 0.10, 0.30, 0.50\}$ and $N \in \{64, 252, 1000\}$; that the sample covariance of
+200{,}000 FFT paths, real and imaginary, matches $C$ within six standard errors per
+entry, with no correlation between the two halves; that the rSVD error is within
+$5\%$ of the Eckart--Young optimum, including $k$ close to $N$; and that Cholesky and
+FFT prices agree within Monte Carlo error.  The Python suite (16 tests) checks the
+same eigenvalue and covariance properties for the numpy engine, the Black--Scholes
+limit at $\nu = 0$, recovery of known $(H, \nu)$ by the variogram calibration, and that
+the C++ and Python parameter files agree.
+
+I checked that the suites catch the bug they were written for: reintroducing the
+halved $\gamma(0)$ makes four C++ checks and eight Python tests fail.
+
 \subsection{Optimization opportunities not implemented}
 \label{sec:opt-opportunities}
 
-Three straightforward improvements would accelerate the MC loop without
+Two straightforward improvements would accelerate the MC loop without
 algorithmic changes:
-
-\paragraph{Two fGn paths per inverse FFT}
-At $N = 1000$ the FFT pricer's per-path cost is dominated not by the transform but
-by random number generation.  In isolation, its $4N$ Gaussian draws (real and
-imaginary parts of $2N$ complex variates) take $\approx 60$--$70\,\mu$s, against
-$\approx 8\,\mu$s for the size-$2N$ inverse FFT.  The real and imaginary parts of
-the transformed vector each have exactly the fGn covariance, and their
-cross-covariance vanishes because $\lambda_j = \lambda_{2N-j}$; I confirmed both
-numerically to within Monte Carlo tolerance.  The pricer nevertheless discards the
-imaginary part.  Using both would halve the Gaussian draws per fBM path, which is
-the largest constant-factor saving available to Algorithm~2.
 
 \paragraph{OpenMP path-level parallelism}
 The outer \texttt{for(m)} loop over paths is embarrassingly parallel: each

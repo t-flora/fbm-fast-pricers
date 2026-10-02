@@ -96,8 +96,11 @@ To sample, draw $W = a + ib$ with $a, b \sim \mathcal{N}(0, I_{2N})$ independent
 (so each component has real and imaginary parts that are independent standard
 normals),
 scale component-wise by $\sqrt{\lambda_j / (2N)}$, apply the inverse FFT, and take
-the real part of the first $N$ elements \citep{davies1987tests}.  One forward FFT (once per experiment) to compute
-$\{\lambda_j\}$, then one inverse FFT per path: total $O(N\log N)$ per path.
+the real part of the first $N$ elements \citep{davies1987tests}.  The imaginary part
+of the same elements is a second, independent fGn sample: both have covariance
+$\gamma(|m-n|)$, and their cross-covariance $\sum_j (\lambda_j/2N)\sin(\cdot)$ vanishes
+because $\lambda_j = \lambda_{2N-j}$.  One forward FFT (once per experiment) computes
+$\{\lambda_j\}$, then each inverse FFT yields two paths: $O(N\log N)$ per path.
 
 The method is valid only if every eigenvalue $\lambda_j$ is non-negative, so that
 $\sqrt{\lambda_j}$ is real \citep{wood1994simulation}.  For rough $H$ this holds at
