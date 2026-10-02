@@ -234,11 +234,14 @@ The yfinance proxy recovers $H$ close to the published $0.1$. Its $\nu$ is infla
 
 ## Future work
 
-- **True hierarchical matrix.** Use a recursive block tree with H-Cholesky (Hackbusch 1999). The structure analysis shows the far-field blocks are low rank even at $H = 0.1$, so this targets exactly what limits the global rSVD.
-- **Larger $N$.** Beyond $N = 4000$, Cholesky's $O(N^2)$ memory (8 GB at $N = 32{,}768$) becomes the binding limit, while FFT stays under 2 MB.
-- **Spot-vol correlation $\rho < 0$**, to produce a skew and enable a real IV comparison.
-- **Variance reduction.** The geometric Asian call (closed form) is a strong control variate.
-- **Hybrid scheme** (Bennedsen, Lunde & Pakkanen 2017). This applies to Volterra/rough-Bergomi models, where a singular kernel must be discretized. It does *not* improve the present model: circulant embedding already samples fGn exactly on the grid, so there is no discretization error to correct.
+`TODO.md` has the full prioritized roadmap, with evidence, plans and done-when criteria. The top items:
+
+1. **Variance-corrected low-rank sampler.** Adding independent noise with variance $\text{diag}(C - C_k)$ restores every marginal variance. In a prototype (`experiments/prototype_further_work.py`) this cuts the rank-32 bias from $-4.3\%$ to $+0.1\%$ at $O(N)$ extra cost per path.
+2. **Conditional geometric control variate.** With $\rho = 0$, the geometric Asian payoff has a closed-form expectation given each volatility path. In the same prototype it reduces the variance $27\times$.
+3. **Continuous integration** for the C++ and Python test suites.
+4. **Performance:** batch paths into matrix-matrix products (Cholesky is bandwidth-bound at large $N$), use a faster Gaussian generator (it dominates the FFT per-path cost), and add multithreading.
+5. **A hierarchical (HODLR) sampler**, which exploits the rank-3 far-field blocks and works on non-uniform grids where the FFT cannot.
+6. **Spot-vol correlation $\rho < 0$**, needed for a real skew comparison. This moves to a Volterra (rough Bergomi) representation, where the Hybrid Scheme of Bennedsen, Lunde & Pakkanen (2017) becomes the relevant fast method.
 
 ---
 

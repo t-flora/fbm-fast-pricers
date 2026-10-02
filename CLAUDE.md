@@ -166,7 +166,7 @@ This is a final project for a fast-algorithms course. Every experiment should be
 
 ## Analysis Scripts
 
-See `TODO.md` for full task descriptions and priority ordering. Summary of new files to create:
+`TODO.md` is the prioritized roadmap for further work (evidence, plan, and done-when criteria per item). `experiments/` holds prototypes for roadmap items; they are not part of `run_pipeline.sh`. Analysis scripts:
 
 | Script | Status | Purpose |
 |---|---|---|
