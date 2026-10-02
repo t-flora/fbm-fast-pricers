@@ -1,0 +1,144 @@
+\section{The three algorithms}
+\label{sec:algorithms}
+
+Table~\ref{tab:complexity} summarizes the three methods.  The rest of this section
+describes each in turn.
+
+\begin{table}[t]
+  \caption{Complexity of the three fBM path generation methods.  $N$: time steps;
+    $M$: paths; $k$: rSVD target rank.  ``Exact'' means the method samples the
+    correct Gaussian distribution on the grid, up to floating-point error; for the
+    FFT method this rests on the positivity result of §\ref{sec:circulant}.}
+  \label{tab:complexity}
+  \centering
+  \begin{tabular}{lllll}
+    \toprule
+    Method & Setup & Per path & Memory & Accuracy \\
+    \midrule
+    Dense Cholesky   & $O(N^3)$        & $O(N^2)$        & $O(N^2)$  & Exact \\
+    Circulant + FFT  & $O(N\log N)$    & $O(N\log N)$    & $O(N)$    & Exact \\
+    Low-rank rSVD    & $O(N^2 k)$      & $O(Nk)$         & $O(Nk)$   & Approximate \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Algorithm 1: Dense Cholesky}
+\label{sec:cholesky}
+
+The fBM covariance matrix $C$ is symmetric positive-definite for all $H \in (0,1)$
+and $N \geq 1$, which is sufficient for an exact Cholesky factorization $C = LL^\top$.
+
+\paragraph{Algorithm}
+\begin{enumerate}
+  \item Build $C \in \mathbb{R}^{N\times N}$ analytically from
+        equation~\eqref{eq:fbm-cov}: $O(N^2)$ flops.
+  \item Factorize $C = LL^\top$ in place via Cholesky decomposition
+        \citep{golub2013matrix}: $N^3/3$ flops.  This is a one-time cost amortized
+        over all $M$ paths.
+  \item For each path: draw $z \sim \mathcal{N}(0, I_N)$ and compute $\nu Lz$, a
+        lower-triangular matrix-vector multiply ($N^2$ flops), which gives the fBM
+        path directly; then simulate the stock price path and accumulate the payoff.
+\end{enumerate}
+
+The method is exact.  The cost is $O(N^2)$ memory for $L$ (7.6~MB at $N=1000$,
+which still fits in the M2's 16~MB L2 cache) and $O(MN^2)$ total work, which
+dominates at practical $M$.  This method serves as the correctness baseline:
+prices from the other two methods are validated against it.  For the comparison
+to be fair, the baseline must do only the work it needs.  An earlier version of my
+implementation multiplied by a dense copy of $L$, zeros included, at $2N^2$ flops
+per path; §\ref{sec:cholesky-impl} describes the fix and its effect.
+
+\subsection{Algorithm 2: Circulant embedding + FFT (Davies-Harte)}
+\label{sec:fft}
+
+The fBM covariance is not Toeplitz, but the covariance of the fGn
+increments $\delta W_k$ is (§\ref{sec:toeplitz}). A Toeplitz matrix embeds
+into a circulant; circulant matrices are diagonalized by the DFT
+(§\ref{sec:circulant}).
+
+\paragraph{Algorithm}
+\begin{enumerate}
+  \item Compute the fGn autocovariance $\gamma(0), \ldots, \gamma(N-1)$ and form the
+        symmetric circulant first row $c \in \mathbb{R}^{2N}$.
+  \item Forward FFT: $\lambda = \mathrm{FFT}(c)$; the eigenvalues are all real
+        (the circulant is symmetric) and positive (§\ref{sec:circulant}).  The
+        code checks the sign and throws if any is negative.
+        $O(N\log N)$ flops, computed once.
+  \item Pre-compute $s_j = \sqrt{\lambda_j / (2N)}$ for all $j$.
+  \item For each pair of paths: draw $W \in \mathbb{C}^{2N}$ whose real and imaginary
+        parts are i.i.d.\ $\mathcal{N}(0,1)$, scale $W_j \leftarrow s_j W_j$, and apply
+        the inverse FFT.  The real and the imaginary parts of the first $N$ entries
+        are two independent sets of fGn increments; cumsum each to fBM.
+        $O(N\log N)$ flops per path.
+\end{enumerate}
+FFTW plans for the forward and inverse transforms are created once before the Monte
+Carlo loop and reused across all $M$ paths \citep{frigo2005design}.
+
+No clipping is needed.  By the argument of §\ref{sec:circulant}, every eigenvalue
+is positive for $H \leq \nicefrac{1}{2}$, so the method is exact on the grid at any
+$N$ \citep{craigmile2003simulating}.  The smallest eigenvalue is $0.24\%$ of
+$\gamma(0)$ at $H = 0.10$, $N = 252$ (§\ref{sec:stability}): small, but positive by
+construction.
+
+\subsection{Algorithm 3: Global low-rank rSVD}
+\label{sec:rsvd}
+
+Away from the diagonal $t = s$, the fBM kernel is smooth, so off-diagonal blocks of
+$C$ are well-approximated at low rank (§\ref{sec:lowrank}). A global rank-$k$
+approximation $C \approx U\,\mathrm{diag}(S)\,U^\top$ replaces $C$ with a compact
+factor $L_k = U\,\mathrm{diag}(\sqrt{S}) \in \mathbb{R}^{N\times k}$, dropping the
+per-path cost from $O(N^2)$ to $O(Nk)$.
+
+\paragraph{Algorithm}
+\begin{enumerate}
+  \item Build $C \in \mathbb{R}^{N\times N}$ analytically: $O(N^2)$ flops.
+  \item Compute a rank-$(k+p)$ randomized SVD of $C$ with $q = 2$ rounds of
+        subspace iteration, re-orthonormalizing after every product (Algorithm~4.4
+        of \citet{halko2011finding}; see §\ref{sec:poweriter}): $O(N^2 k)$ flops.
+        Retain the top-$k$ singular triplets $(U, S, U^\top)$.
+  \item Form the approximate Cholesky factor $L_k = U\,\mathrm{diag}(\sqrt{S})
+        \in \mathbb{R}^{N\times k}$: $L_k L_k^\top \approx C$.
+  \item For each path: draw $z \sim \mathcal{N}(0, I_k)$, compute $\nu L_k z$
+        ($O(Nk)$ flops), cumsum to approximate fBM, simulate payoff.
+\end{enumerate}
+
+\paragraph{What it sacrifices.}
+Exactness.  The sampled paths have covariance $\nu^2 C_k$ rather than $\nu^2 C$, so
+they are missing the variance $\nu^2\,\mathrm{tr}(C - C_k)$ held by the discarded
+eigenvalues.  Because the spectrum of the full matrix decays only algebraically
+(Figure~\ref{fig:structure}(d)), that loss is large: 21\% of the total path variance
+at $k = 32$ and still 13\% at $k = 128$.  Less volatility means lower option prices,
+and Section~\ref{sec:errorrank} shows the sampler underpricing by 4--8\%.
+
+This is a global rSVD, a single rank-$k$ approximation of the entire
+$N\times N$ matrix.  It must allocate rank budget to both the smooth far-off-diagonal
+blocks and the singular near-diagonal region, which drives up the required $k$
+at small $H$.  A true hierarchical H-matrix keeps near-diagonal blocks dense and
+compresses only far-off-diagonal blocks \citep{hackbusch2015hierarchical}.
+
+\subsection{Other algorithms for further exploration}
+
+\paragraph{True hierarchical H-matrix}
+A recursive block-tree H-matrix decomposes $C$ into $O(\log N)$ levels of blocks:
+near-diagonal blocks at each level are kept dense, while well-separated blocks at the
+same level are approximated at rank proportional to their distance from the diagonal.
+The resulting structure supports an H-Cholesky factorization with $O(Nk\log N)$
+construction cost and $O(Nk)$ per-path cost, which is better scaling than the global rSVD
+at large $N$ \citep{hackbusch2015hierarchical, bebendorf2008hierarchical}.
+The complexity gain is a $\log N$ factor over Algorithm~3; it requires implementing
+a recursive block-tree and the associated H-matrix arithmetic (§\ref{sec:hmatrix-future}).
+
+\paragraph{Hybrid Scheme for rough Bergomi}
+The Hybrid Scheme of \citet{bennedsen2017hybrid} achieves high RMSE reduction
+over naïve Euler discretization at the same $O(N\log N)$ cost.  It does so by
+exploiting the separability of the Volterra kernel $K(t,s) = (t-s)^{H-1/2}$ near
+$t=s$ into a singular analytic part and a smooth remainder.  However, this kernel
+governs the rough Bergomi model \citep{bayer2016pricing}, not the fBM-RFSV
+model studied here: log-volatility in rough Bergomi is $\int_0^t (t-s)^{H-1/2}dW_s$,
+a Volterra integral, whereas in RFSV it is simply $\nu W_t^H$.  Adopting the Hybrid
+Scheme would require switching model class.
+
+\paragraph{Quasi-Monte Carlo}
+Replacing pseudo-random Gaussian draws with low-discrepancy sequences
+\citep{niederreiter1992random} reduces MC standard error from $O(M^{-1/2})$ to near
+$O(M^{-1})$, an improvement that can be combined with any of the three algorithms.

@@ -42,9 +42,9 @@ if [ "$FAST" -eq 1 ]; then
     echo "Mode: FAST (reduced M for smoke-test)"
 else
     M_ASIAN=10000; N_ASIAN=252
-    M_IV=3000;     N_IV=63
+    M_IV=20000;    N_IV=63
     M_SENS=10000;  N_SENS=252
-    CONV_SEEDS=5;  CONV_MAX_M=25000
+    CONV_SEEDS=20; CONV_MAX_M=25000
     STRUCT_SMALL=64; STRUCT_LARGE=128
     echo "Mode: PRODUCTION"
 fi
@@ -69,6 +69,12 @@ else
     echo ""
     echo "── Step 1/10: cmake build — SKIPPED (--no-build) ──"
 fi
+
+# ── Tests: stop before benchmarking if any sampler check fails ─────────────────
+echo ""
+echo "── Tests: C++ samplers + Python engine ──"
+./build/test_samplers
+uv run pytest tests/ -q
 
 # ── Step 2: C++ benchmark ─────────────────────────────────────────────────────
 echo ""

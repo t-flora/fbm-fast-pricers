@@ -1,7 +1,7 @@
 [project]
 name = "final-project"
 version = "0.1.0"
-description = "Add your description here"
+description = "Monte Carlo pricing of arithmetic Asian calls under rough volatility: Cholesky vs FFT vs rSVD fBM sampling"
 requires-python = ">=3.14"
 dependencies = [
     "matplotlib>=3.10.8",
@@ -11,4 +11,9 @@ dependencies = [
     "scipy>=1.17.1",
     "seaborn>=0.13.2",
     "yfinance>=1.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
 ]

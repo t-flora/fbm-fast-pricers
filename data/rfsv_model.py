@@ -15,6 +15,11 @@ import numpy as np
 from scipy.stats import norm as sp_norm
 from scipy.optimize import brentq
 
+try:
+    from data.params import MU0
+except ImportError:  # imported with data/ itself on sys.path (e.g. from tests/)
+    from params import MU0
+
 
 # ── fGn covariance ───────────────────────────────────────────────────────────
 
@@ -66,16 +71,20 @@ def simulate_log_vol_paths(N: int, M: int, H: float, nu: float,
 # ── Price path simulation ────────────────────────────────────────────────────
 
 def _simulate_price_paths(log_vol: np.ndarray, S0: float, r: float,
-                          dt: float, seed: int = 99) -> np.ndarray:
+                          dt: float, seed: int = 42) -> np.ndarray:
     """
     Convert (M, N) log-vol paths → (M, N) GBM price paths.
 
     S_{t+dt} = S_t * exp((r - σ_t²/2)*dt + σ_t*sqrt(dt)*Z_t)
     where σ_t = exp(log_vol[t]).  Matches C++ log_vol_to_prices().
+
+    The shocks Z come from SeedSequence([seed, 1]), a stream independent of the
+    log-vol stream default_rng(seed) and of every other integer seed.  (Using
+    seed + 1 here would collide with the log-vol stream of the run seeded seed + 1.)
     """
     M, N = log_vol.shape
     sigma = np.exp(log_vol)                         # (M, N) instantaneous vol
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng([seed, 1])
     Z = rng.standard_normal((M, N))
     log_returns = (r - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * Z
     log_prices = np.log(S0) + np.cumsum(log_returns, axis=1)
@@ -86,11 +95,17 @@ def _simulate_price_paths(log_vol: np.ndarray, S0: float, r: float,
 
 def price_asian_call(H: float, nu: float, K: float, T: float = 1.0,
                      S0: float = 100.0, r: float = 0.0,
-                     N: int = 252, M: int = 10000, seed: int = 42) -> float:
-    """Price arithmetic Asian call under RFSV model via Monte Carlo."""
+                     N: int = 252, M: int = 10000, seed: int = 42,
+                     mu0: float = MU0) -> float:
+    """
+    Price arithmetic Asian call under RFSV model via Monte Carlo.
+
+    mu0: log-vol level, log sigma_t = mu0 + nu * W_t^H.  Defaults to
+         log(SIGMA0) from data/params.py (sigma_0 = 0.2).
+    """
     dt = T / N
-    log_vol = simulate_log_vol_paths(N, M, H, nu, dt, seed=seed)
-    prices = _simulate_price_paths(log_vol, S0, r, dt, seed=seed + 1)
+    log_vol = simulate_log_vol_paths(N, M, H, nu, dt, seed=seed) + mu0
+    prices = _simulate_price_paths(log_vol, S0, r, dt, seed=seed)
     A = np.mean(prices, axis=1)                     # arithmetic average per path
     payoff = np.maximum(A - K, 0.0)
     return float(np.exp(-r * T) * np.mean(payoff))
@@ -99,19 +114,25 @@ def price_asian_call(H: float, nu: float, K: float, T: float = 1.0,
 def price_european_call(H: float, nu: float, K: float, T: float = 1.0,
                         S0: float = 100.0, r: float = 0.0,
                         N: int = 252, M: int = 10000, seed: int = 42,
-                        mu0: float = 0.0) -> float:
+                        mu0: float = MU0, martingale_correct: bool = False) -> float:
     """
     Price European call under RFSV model via Monte Carlo.
 
     mu0: log-vol drift (additive shift to log σ_t).
          log σ_t = mu0 + nu * W_t^H.
-         Default mu0=0 → σ_0 = 1.0 (matches C++ params.hpp).
+         Default log(SIGMA0) → σ_0 = 0.2 (matches C++ params.hpp).
          Set mu0 = log(target_vol) to calibrate to market vol level.
+    martingale_correct: rescale S_T so its sample mean equals the forward
+         S0 * exp(rT) exactly (moment matching).  With common random numbers
+         across strikes, a sampling error in mean(S_T) acts like a shifted
+         forward and tilts the whole implied-vol curve; this removes it.
     """
     dt = T / N
     log_vol = simulate_log_vol_paths(N, M, H, nu, dt, seed=seed) + mu0
-    prices = _simulate_price_paths(log_vol, S0, r, dt, seed=seed + 1)
+    prices = _simulate_price_paths(log_vol, S0, r, dt, seed=seed)
     S_T = prices[:, -1]                             # terminal price only
+    if martingale_correct:
+        S_T = S_T * (S0 * np.exp(r * T) / S_T.mean())
     payoff = np.maximum(S_T - K, 0.0)
     return float(np.exp(-r * T) * np.mean(payoff))
 

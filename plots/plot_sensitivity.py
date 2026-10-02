@@ -9,14 +9,14 @@ Sweeps RFSV model parameters to show how Asian call prices depend on:
 Figures produced:
   1. sensitivity_surface.png -- 2-panel: heatmap price vs (H, nu) at ATM, and
      line plot price vs H for each nu.
-  2. sensitivity_strike.png  -- price vs K for each H value at fixed nu=0.30.
+  2. sensitivity_strike.png  -- price vs K for each H value at fixed nu = NU (0.52).
 
 Usage:
     uv run python plots/plot_sensitivity.py [--M 10000] [--N 252]
 
 Output:
-    plots/sensitivity_surface.png
-    plots/sensitivity_strike.png
+    plots/figures/sensitivity_surface.png
+    plots/figures/sensitivity_strike.png
 
 ──────────────────────────────────────────────────────────────────────────
 BEGINNER'S GUIDE
@@ -24,9 +24,12 @@ BEGINNER'S GUIDE
 
 Why does price increase as H decreases?
 
-  This is the "roughness premium".  The RFSV model has sigma_t = exp(nu * W_t^H).
-  Rougher processes (smaller H) produce more erratic volatility paths — lots of
-  sharp spikes.  For Asian options, this matters because:
+  The RFSV model has sigma_t = exp(nu * W_t^H) with Var(nu W_t^H) = nu^2 t^{2H}.
+  For t < 1 year, t^{2H} is larger when H is smaller, so at fixed nu a lower H
+  means log-vol both wanders further from 0 AND is rougher.  The price increase
+  therefore mixes a variance effect with a roughness effect; isolating pure
+  roughness would require rescaling nu to hold integrated variance fixed.
+  Higher log-vol variance raises the price because:
   (1) Jensen's inequality: E[f(sigma)] > f(E[sigma]) for convex f.
       Higher variability in sigma => higher expected payoff.
   (2) ATM options are most sensitive to vol changes (high gamma, high vega).
@@ -75,16 +78,17 @@ import seaborn as sns
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from data.rfsv_model import price_asian_call
+from data.params import NU, S0, T, R
 
 sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
-S0 = 100.0
-T  = 1.0
-R  = 0.0
 
 H_GRID  = np.array([0.05, 0.10, 0.15, 0.20, 0.30, 0.50])
-NU_GRID = np.array([0.10, 0.20, 0.30, 0.40])
+NU_GRID = np.array([0.10, 0.30, NU, 0.70])  # brackets the model value NU
 K_GRID  = np.array([80.0, 90.0, 100.0, 110.0, 120.0])
+
+
+SEED = 42
 
 
 def run_grid(H_grid, nu_grid, K_atm, N, M):
@@ -97,8 +101,10 @@ def run_grid(H_grid, nu_grid, K_atm, N, M):
             count += 1
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
+                # Common random numbers: every cell reuses the same Gaussian draws, so
+                # cell-to-cell differences reflect (H, nu), not independent MC noise
                 grid[i, j] = price_asian_call(H=H, nu=nu, K=K_atm, T=T, S0=S0, r=R,
-                                              N=N, M=M, seed=100 * i + j)
+                                              N=N, M=M, seed=SEED)
             print(f"  [{count}/{total}] H={H:.2f}  nu={nu:.2f}  price={grid[i,j]:.3f}")
     return grid
 
@@ -112,7 +118,7 @@ def run_strike_sweep(H_grid, nu_fixed, K_grid, N, M):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 p = price_asian_call(H=H, nu=nu_fixed, K=K, T=T, S0=S0, r=R,
-                                     N=N, M=M, seed=200 + 10 * i + j)
+                                     N=N, M=M, seed=SEED)  # common random numbers
             prices.append(p)
         results[H] = np.array(prices)
     return results
@@ -141,7 +147,7 @@ def plot_surface(H_grid, nu_grid, price_grid, out_path, M):
                 linewidths=0.4, linecolor="white")
     ax.set_xlabel(r"Vol-of-vol  $\nu$")
     ax.set_ylabel("Hurst exponent  H")
-    ax.set_title("ATM price vs (H, nu)\nlow H (rough) = higher price")
+    ax.set_title("ATM price vs (H, nu)\nlower H at fixed nu = higher price")
     # seaborn.heatmap places the first DataFrame row (H=0.05) at the TOP of the
     # y-axis, which reverses the natural ordering (H increases downward).
     # invert_yaxis() flips it so H increases upward, matching the line plot in
@@ -224,8 +230,8 @@ def main():
     plot_surface(H_GRID, NU_GRID, price_grid,
                  os.path.join(out_dir, "sensitivity_surface.png"), M=args.M)
 
-    # ── Strike sweep: K × H at nu=0.30 (calibrated) ─────────────────────────
-    NU_FIXED = 0.30
+    # ── Strike sweep: K × H at the model nu ─────────────────────────────────
+    NU_FIXED = NU
     print(f"\nComputing K × H sweep (nu={NU_FIXED}, M={args.M}, N={args.N}) ...")
     strike_results = run_strike_sweep(H_GRID, NU_FIXED, K_GRID, args.N, args.M)
 

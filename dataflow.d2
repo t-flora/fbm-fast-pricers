@@ -58,9 +58,9 @@ per path: IFFT(√λ·w) — O(N log N)
 | {shape: rectangle}
 
   alg3: |md
-## Algorithm 3 — H-matrix + rSVD
-`src/hmatrix/hmatrix.hpp`
-setup : rSVD → Lₖ — O(Nk²)
+## Algorithm 3 — Global low-rank rSVD
+`src/rsvd/lowrank.hpp`
+setup : rSVD → Lₖ — O(N²k)
 per path: Lₖz — O(Nk)
 | {shape: rectangle}
 
@@ -163,7 +163,7 @@ price ±1σ vs M paths, confirm σ ∝ 1/√M
 stab: |md
 ## `validate_stability.py`
 → stability_report.png
-FFT clipping, rSVD κ(Lₖ), Cholesky κ(C)
+FFT eigenvalue positivity, rSVD κ(Lₖ), Cholesky κ(C)
 | {shape: rectangle}
 
 mem: |md

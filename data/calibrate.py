@@ -1,12 +1,18 @@
 """
 Block 1: Calibrate Hurst exponent (H) and vol-of-vol (nu) from Oxford-Man data.
 
-Downloads (or reads from data/raw/) the Oxford-Man Realized Library CSV,
-computes log-volatility increments, and estimates H via fractional linear
-regression (log-log regression of variogram increments).
+Reads the Oxford-Man Realized Library CSV from data/raw/ (or builds a proxy
+from yfinance daily returns), and fits the RFSV log-vol variogram
+
+    E[(log s_{t+D} - log s_t)^2] = nu^2 * D^{2H}
+
+by OLS on a log-log scale: slope = 2H, intercept = 2 log(nu).  D is measured
+in years, matching the C++ engine (T = 1, dt = 1/N), so the printed nu can be
+pasted into params.hpp directly.
 
 Usage:
-    python data/calibrate.py [--ticker SPX2.rv] [--lag-max 20]
+    uv run python data/calibrate.py [--ticker .SPX] [--lag-max 20]
+    uv run python data/calibrate.py --source yfinance [--ticker ^GSPC]
 
 Output:
     Prints H and nu to stdout — copy into src/common/params.hpp.
@@ -64,39 +70,47 @@ def load_yfinance_rv(ticker: str = "^GSPC", start: str = "2000-01-01",
     return rv_proxy
 
 
-def load_oxford_man(filepath: str, rv_col: str = "rv5") -> pd.Series:
-    """Load Oxford-Man CSV and return a Series of realized variance for one index."""
-    df = pd.read_csv(filepath, header=2, index_col=0, parse_dates=True)
-    df.index = pd.to_datetime(df.index)
+def load_oxford_man(filepath: str, rv_col: str = "rv5", symbol: str = ".SPX") -> pd.Series:
+    """
+    Load Oxford-Man CSV and return a Series of realized variance for one index.
+
+    The published CSV is in long format: one row per (date, Symbol), with all
+    ~30 indices stacked.  It must be filtered to a single Symbol, otherwise the
+    variogram would difference across unrelated indices.
+    """
+    df = pd.read_csv(filepath, index_col=0)
+    df.index = pd.to_datetime(df.index, utc=True)
+    if "Symbol" in df.columns:
+        symbols = sorted(df["Symbol"].unique())
+        if symbol not in symbols:
+            raise ValueError(f"Symbol '{symbol}' not found. Available: {symbols}")
+        df = df[df["Symbol"] == symbol]
+    df = df.sort_index()
     if rv_col not in df.columns:
         available = [c for c in df.columns if "rv" in c.lower()]
         raise ValueError(f"Column '{rv_col}' not found. Available RV columns: {available}")
     return df[rv_col].dropna()
 
 
-def estimate_hurst(log_vol: np.ndarray, lag_max: int = 20) -> float:
+def fit_variogram(log_vol: np.ndarray, step_years: float,
+                  lag_max: int = 20) -> tuple[float, float]:
     """
-    Estimate Hurst exponent H via variogram regression.
-    E[|X(t+h) - X(t)|^2] ~ h^{2H}  =>  slope of log-log plot = 2H
+    Estimate (H, nu) from E[(X(t+D) - X(t))^2] = nu^2 D^{2H}.
+
+    step_years: time between consecutive observations, in years.  The lag
+    D = lag * step_years must be in the same units as the pricer's time axis,
+    otherwise nu is off by a factor (step)^H (e.g. 252^0.1 = 1.74 for days).
     """
     lags = np.arange(1, lag_max + 1)
     variogram = np.array([
         np.mean((log_vol[lag:] - log_vol[:-lag]) ** 2)
         for lag in lags
     ])
-    log_lags = np.log(lags)
-    log_var = np.log(variogram)
-    result = stats.linregress(log_lags, log_var)
-    slope, r = result.slope, result.rvalue
-    H = slope / 2.0
-    print(f"  Variogram regression: slope={slope:.4f}, R²={r**2:.4f}")
-    return H
-
-
-def estimate_nu(log_vol: np.ndarray) -> float:
-    """Estimate vol-of-vol (nu) as std of log-vol increments."""
-    increments = np.diff(log_vol)
-    return float(np.std(increments))
+    result = stats.linregress(np.log(lags * step_years), np.log(variogram))
+    H = result.slope / 2.0
+    nu = float(np.exp(result.intercept / 2.0))
+    print(f"  Variogram regression: slope={result.slope:.4f}, R²={result.rvalue**2:.4f}")
+    return H, nu
 
 
 def main():
@@ -106,7 +120,7 @@ def main():
     parser.add_argument("--rv-col", default="rv5",
                         help="Realized variance column name (default: rv5)")
     parser.add_argument("--ticker", default=None,
-                        help="Filter to specific .SPX2, .FTSE, etc. (Oxford-Man) or yfinance ticker")
+                        help="Oxford-Man Symbol (default .SPX) or yfinance ticker (default ^GSPC)")
     parser.add_argument("--lag-max", type=int, default=20,
                         help="Maximum lag for variogram (default: 20)")
     parser.add_argument("--source", choices=["oxfordman", "yfinance"], default="oxfordman",
@@ -116,8 +130,10 @@ def main():
     if args.source == "yfinance":
         yf_ticker = args.ticker or "^GSPC"
         print(f"Fetching proxy RV from yfinance ({yf_ticker}) ...")
-        rv = load_yfinance_rv(yf_ticker)
-        print(f"  Loaded {len(rv)} daily obs ({rv.index[0].date()} to {rv.index[-1].date()})")
+        window = 5
+        rv = load_yfinance_rv(yf_ticker, window=window)
+        step_years = window / 252.0
+        print(f"  Loaded {len(rv)} {window}-day windows ({rv.index[0].date()} to {rv.index[-1].date()})")
         print("  NOTE: Using (log-return)^2 as proxy — coarser than 5-min Oxford-Man RV.")
     else:
         if not os.path.exists(args.file):
@@ -129,22 +145,23 @@ def main():
             sys.exit(1)
 
         print(f"Loading data from {args.file} ...")
-        rv = load_oxford_man(args.file, rv_col=args.rv_col)
-        print(f"  Loaded {len(rv)} daily observations ({rv.index[0].date()} to {rv.index[-1].date()})")
+        symbol = args.ticker or ".SPX"
+        rv = load_oxford_man(args.file, rv_col=args.rv_col, symbol=symbol)
+        step_years = 1.0 / 252.0
+        print(f"  Loaded {symbol}: {len(rv)} daily observations ({rv.index[0].date()} to {rv.index[-1].date()})")
 
     # log-volatility = 0.5 * log(realized_variance)
     log_vol = 0.5 * np.log(rv.values)
 
-    print(f"\nEstimating Hurst exponent (lag_max={args.lag_max}) ...")
-    H = estimate_hurst(log_vol, lag_max=args.lag_max)
-
-    print(f"\nEstimating vol-of-vol ...")
-    nu = estimate_nu(log_vol)
+    print(f"\nFitting log-vol variogram (lag_max={args.lag_max}) ...")
+    H, nu = fit_variogram(log_vol, step_years, lag_max=args.lag_max)
+    nu_daily = nu * (1.0 / 252.0) ** H   # same fit with D measured in trading days
 
     print(f"\n{'='*50}")
     print(f"Calibrated parameters:")
     print(f"  H   = {H:.4f}   (Hurst exponent)")
-    print(f"  nu  = {nu:.4f}  (vol-of-vol)")
+    print(f"  nu  = {nu:.4f}  (vol-of-vol, time in years: used by the C++ engine)")
+    print(f"        {nu_daily:.4f}  (same, time in trading days, as quoted by Gatheral et al.)")
     print(f"{'='*50}")
     print(f"\nPaste into src/common/params.hpp:")
     print(f"  constexpr double H   = {H:.4f};")

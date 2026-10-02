@@ -1,0 +1,218 @@
+\section{Model Validation}
+\label{sec:validation}
+
+Three experiments probe the RFSV pricer: (i) the implied volatility smile
+against live SPY option chain data; (ii) a comparison with constant-volatility
+baselines, and the roughness premium with and without variance matching; and (iii)
+a parameter sensitivity sweep over $H$ and $\nu$.  Each uses the Python RFSV engine
+(\texttt{data/rfsv\_model.py}), which implements the circulant-FFT path
+generator with the same normalization as the C++ FFT pricer.  Every comparison
+between configurations (different $H$, $\nu$ or $K$) uses common random numbers, so
+differences are measured far more precisely than the absolute prices.
+
+\subsection{Implied volatility smile}
+\label{sec:iv}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{validate_iv.png}
+  \caption{RFSV vs market implied volatility smile for SPY, for the two nearest
+    weekly expirations in a snapshot taken on October 2, 2026 (spot \$771.09).
+    Scatter: market IV computed by Black--Scholes inversion of mid-quote
+    (\texttt{brentq}, $r = 0$, filtered to strikes in $[0.60S, 1.40S]$ with
+    valid bid/ask spread); the $y$-axis is capped at $40\%$, and the 39 and 42
+    deep-ITM market IVs above it are marked as off scale.
+    Line: RFSV IV, same inversion applied to Monte Carlo European call prices,
+    with common random numbers across strikes and the sample mean of $S_T$
+    matched to the forward.
+    The RFSV log-vol level $\mu_0 = \log\sigma_\mathrm{eff}$ is calibrated per expiration to
+    match the ATM price (not IV): Brent's method on the price residual
+    $p_\mathrm{RFSV} - p_\mathrm{mkt}(\sigma_\mathrm{ATM})$.
+    The shaded region marks deep-ITM strikes where no simulated path finishes
+    below $K$, so the Monte Carlo time value is zero and the IV is undefined.
+    Controlled: $H = 0.10$, $\nu = 0.52$, $r = 0$, $M = 20{,}000$,
+    $N = 63$ steps per year (at least 5 steps).
+    Independent: strike $K$, expiration $T$.
+    Dependent: implied volatility $\sigma_\mathrm{IV}$.}
+  \label{fig:iv}
+\end{figure}
+
+Figure~\ref{fig:iv} shows the results.  For this comparison the base level is not
+fixed at $\sigma_0 = 0.2$ but calibrated per expiration, $\mu_0 = \log\sigma_\mathrm{eff}$,
+so that the RFSV ATM price matches the market ATM price.  This aligns the curves at
+the money ($12.1\%$ and $13.1\%$ for the two expirations, with
+$\sigma_\mathrm{eff} = 0.112$ and $0.119$), so the comparison concerns smile shape
+(slope and curvature), not the vol level.
+
+The model smile has clear curvature but no skew.  For the nearer expiration
+($T = 0.019$) it has its minimum at the money and rises to $\approx 17.5\%$ at
+$K/S = 0.91$ and $\approx 15\%$ at $K/S = 1.06$.  The SPY smile is strongly skewed
+instead: above $40\%$ at $K/S = 0.91$, falling to a minimum of $\approx 10.5\%$ near
+$K/S = 1.02$, and recovering to $\approx 16\%$ at $1.06$.  The later expiration
+($T = 0.038$) has the same shape.  In the out-of-the-money call wing the two curves
+roughly meet, so the vol-of-vol $\nu = 0.52$ produces about the right amount of
+curvature there.  Below the money the model misses the skew entirely.  This is
+expected: the engine draws the price shocks independently of the volatility driver,
+so the spot-vol correlation is $\rho = 0$, and with $\rho = 0$ a stochastic volatility
+model produces a smile that is symmetric in log-moneyness.  The steep short-dated
+skew that rough volatility is known for \citep{gatheral2018volatility} requires
+$\rho < 0$ (§\ref{sec:rho-future}).
+
+\paragraph{A Monte Carlo pitfall: forward error masquerading as skew.}
+An earlier run of this experiment (an October 1 snapshot with $\nu = 0.30$) used
+$M = 3{,}000$ paths with common random numbers but no correction, and its RFSV curve rose steadily with strike, from
+$13.0\%$ to $15.7\%$ across $0.98 \leq K/S \leq 1.05$.  That curve looks like an
+upward skew, which a $\rho = 0$ model cannot produce.  The cause was sampling
+error in the forward.  The sample mean of $S_T$ was $0.048\%$ below $S_0$, and
+because every strike shares the same paths, that error acts like a shifted
+forward and tilts the entire IV curve; it also biases the calibrated $\mu_0$.  A
+400{,}000-path run of the same model gives an approximately symmetric smile with its minimum at
+the money ($14.57\%$ at $K/S = 1.00$, against $14.79\%$ at $0.98$ and $14.70\%$
+at $1.02$).  The current script rescales the simulated $S_T$ so that its sample
+mean equals the forward exactly, a standard moment-matching correction
+\citep{glasserman2004monte}, and uses $M = 20{,}000$ paths.  At $N \approx 5$
+time steps per path the whole experiment runs in a few seconds.
+
+\paragraph{Limitations}
+I set $r = 0$ and ignore SPY's dividend yield.  For near-the-money options this
+shifts IV levels slightly and leaves the shape comparison largely unaffected.
+For deep in-the-money calls the effect is large: the carry in an ITM call price
+is misread as time value, which inflates those market IVs (many above $40\%$),
+so I do not interpret the low-strike wing.  SPY options are American-style; for
+calls on a low-dividend ETF the early-exercise premium is small, and I treat
+them as European.  The comparison is a single-day snapshot; market IV smiles
+vary substantially day-to-day.  Brent's method stops at a tolerance of $0.01$ in
+$\mu_0$, about $1\%$ in $\sigma_\mathrm{eff}$.
+
+\subsection{Lévy benchmark and roughness premium}
+\label{sec:levy}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{validate_asian.png}
+  \caption{Asian option prices vs strike.
+    \textbf{(a)} Price vs $K$: Lévy (1992) approximation and exact GBM by Monte
+    Carlo at $\sigma = 0.2$ (constant vol), and RFSV at four $H$ values
+    ($\nu = 0.52$, $\sigma_0 = 0.2$); each curve is the mean of 10 seeds of 10{,}000
+    paths, with the same seeds for every curve.
+    \textbf{(b)} Roughness premium $\hat{p}(H{=}0.10) - \hat{p}(H{=}0.50)$ vs $K$, at
+    fixed $\nu = 0.52$ (red) and with $\nu$ at $H = 0.5$ chosen to match the expected
+    integrated variance (blue); error bars are $\pm 1$ paired standard error across
+    seeds.
+    Controlled: $S_0 = 100$, $T = 1$, $\sigma_0 = 0.2$, $r = 0$, $N = 252$.
+    Independent: $K$ (both panels); $H$ and $\nu$.
+    Dependent: arithmetic Asian call price.}
+  \label{fig:levy}
+\end{figure}
+
+Figure~\ref{fig:levy} shows the results.
+
+\paragraph{Constant-volatility baselines: }
+When $\nu \to 0$, $\sigma_t \to \sigma_0$, so the RFSV dynamics reduce to
+constant-volatility GBM with $\sigma = 0.2$, which the Lévy approximation is designed
+for \citep{levy1992pricing}.  At this volatility it is accurate: at the money it gives
+$4.625$, against $4.606 \pm 0.027$ for exact discrete GBM by Monte Carlo
+(100{,}000 paths).  All four RFSV curves lie above both baselines, ordered by $H$, as
+stochastic volatility and Jensen's inequality predict.  At the money the RFSV prices
+are $5.445$, $5.302$, $4.979$, and $4.834$ for $H = 0.05$, $0.10$, $0.30$, and $0.50$, so
+rough stochastic volatility adds $0.70$ to the GBM price at $H = 0.10$.  (An earlier
+version of this experiment used $\sigma = 1$, where the Lévy approximation overprices
+exact GBM by about 6\%, enough to put the Lévy curve above the RFSV curves; it is
+reliable only at realistic volatility.)
+
+\paragraph{Roughness premium: }
+At fixed $\nu = 0.52$, the premium $\hat{p}(H{=}0.10) - \hat{p}(H{=}0.50)$ is positive at
+every strike, rising from $0.178$ at $K = 80$ to $0.468 \pm 0.008$ at the money and
+falling to $0.319$ at $K = 120$.  But this compares more than roughness.  At fixed
+$\nu$, $\text{Var}(\log\sigma_t) = \nu^2 t^{2H}$ is larger for small $H$ when $t < 1$, and
+the expected integrated variance
+\begin{equation}
+  \label{eq:intvar}
+  \mathbb{E}\!\left[\int_0^T \sigma_t^2\,dt\right]
+  = \sigma_0^2 \int_0^T e^{2\nu^2 t^{2H}}\,dt
+\end{equation}
+is $18.6\%$ higher at $H = 0.10$ than at $H = 0.50$ ($1.574\,\sigma_0^2$ against
+$1.327\,\sigma_0^2$).  To isolate roughness, I solve~\eqref{eq:intvar} for the $\nu$ at
+$H = 0.5$ that gives the same integrated variance as $(H, \nu) = (0.10, 0.52)$, which
+is $\nu = 0.651$, and price again with the same random numbers.  The variance-matched
+premium is $0.330 \pm 0.009$ at the money, so about 70\% of the premium survives: most
+of the price increase comes from path roughness itself, not from higher total
+variance.  Both premia peak at the money, where the call payoff is most sensitive to
+the shape of the volatility path.
+
+\paragraph{Limitations: }
+Matching expected integrated variance is one reasonable normalization, not the only
+one; matching $\int_0^T \text{Var}(\log\sigma_t)\,dt$ instead gives a slightly different
+$\nu$ (§\ref{sec:variancenorm}).  The standard errors are paired across 10 seeds, so
+they reflect how consistently the premium appears under common random numbers; the
+absolute prices carry the larger standard error of $\approx 0.03$.
+
+\subsection{Parameter sensitivity: }
+\label{sec:sensitivity}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{sensitivity_surface.png}
+  \caption{ATM Asian call price vs model parameters.
+    \textbf{(a)} Heatmap: price vs $(H, \nu)$ at $K = S_0 = 100$ (viridis
+    colormap; low H = rough = lower on the $y$-axis because the axis is
+    inverted so H increases upward).
+    \textbf{(b)} Price vs $H$ for each $\nu$; curves decrease left-to-right
+    and separate vertically with $\nu$.
+    All cells share the same random numbers, so differences between cells are
+    precise even though each absolute price has an MC standard error of
+    $\approx 0.1$.
+    Controlled: $S_0 = 100$, $K = 100$, $T = 1$, $\sigma_0 = 0.2$, $r = 0$, $N = 252$,
+    $M = 10{,}000$.
+    Independent: $H$, $\nu$.
+    Dependent: ATM Asian call price.}
+  \label{fig:sensitivity}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{sensitivity_strike.png}
+  \caption{Asian call price vs strike $K$ for varying $H$ at $\nu = 0.52$, with
+    common random numbers across all curves.  Curves decrease monotonically with
+    strike and are ordered by $H$ at every strike; the spread between $H = 0.05$
+    and $H = 0.50$ peaks at the money.
+    Controlled: $\nu = 0.52$, $\sigma_0 = 0.2$, $S_0 = 100$, $T = 1$, $r = 0$,
+    $N = 252$, $M = 10{,}000$.
+    Independent: $K$, $H$.
+    Dependent: Asian call price.}
+  \label{fig:sensitivitystrike}
+\end{figure}
+
+Figures~\ref{fig:sensitivity} and~\ref{fig:sensitivitystrike} show the
+results:
+
+\begin{itemize}
+  \item \textbf{Price decreases with $H$, and more so at large $\nu$:} at
+        $\nu = 0.52$ the ATM price falls from $5.373$ at $H = 0.05$ to $4.735$ at
+        $H = 0.50$.  The gap between $H = 0.10$ and $H = 0.50$ is only $0.020$ at
+        $\nu = 0.10$ but $0.937$ at $\nu = 0.70$: without vol-of-vol there is no
+        volatility path whose roughness could matter.  As §\ref{sec:levy} shows,
+        most of this effect is roughness rather than added variance.
+
+  \item \textbf{Price increases with $\nu$:} at $H = 0.10$ the ATM price rises from
+        $4.540$ at $\nu = 0.10$ to $5.869$ at $\nu = 0.70$.  Larger vol-of-vol
+        amplifies $\sigma_t$ variation, and the increase is convex in $\nu$ because
+        $\sigma_t = \sigma_0 e^{\nu W_t^H}$ enters exponentially.
+
+  \item \textbf{The $H$ effect peaks at the money:} the spread between $H = 0.05$
+        and $H = 0.50$ is $0.27$ at $K = 80$, $0.64$ at $K = 100$, and $0.41$ at
+        $K = 120$ (Figure~\ref{fig:sensitivitystrike}), matching the strike profile
+        of the premium in Figure~\ref{fig:levy}(b).
+\end{itemize}
+
+At the model parameters $H = 0.10$, $\nu = 0.52$ the ATM price in the grid is $5.223$,
+one standard error ($\approx 0.095$) below the $10^6$-path reference of $5.325$
+(§\ref{sec:convergence}); the grid's absolute level carries that single run's MC error,
+while its differences do not.
+
+\paragraph{Limitations: }
+All grid points share one random seed.  This makes the trends across the grid
+reliable, but the whole surface carries a common MC offset with a standard error of
+$\approx 0.1$ price units.  The sensitivity surfaces are computed on a $6 \times 4$ grid
+($H \times \nu$) at a fixed $N = 252$; finer grids and higher $M$ are feasible but
+were not run for this report.

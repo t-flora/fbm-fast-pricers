@@ -15,7 +15,7 @@ Two key insights visualised:
        - Rougher H => slower singular-value decay => higher rank needed.
 
 Output:
-    plots/structure_analysis.png
+    plots/figures/structure_analysis.png
 
 Usage:
     uv run python plots/plot_structure.py [--N-small 64] [--N-large 128]
@@ -31,7 +31,7 @@ Panel (a) vs (b): fBM vs fGn covariance heatmaps
   different color, confirming non-stationarity.
 
   fGn covariance: gamma(|i-j|) — depends only on the lag |i-j|, not on i or j
-  separately.  Each anti-diagonal has the same color: this is Toeplitz.
+  separately.  Each diagonal has a constant color: this is Toeplitz.
 
   A Toeplitz matrix T has T[i,j] = f(|i-j|).  Any Toeplitz T can be embedded
   into a 2N x 2N circulant C (by mirroring its first row), and a circulant
@@ -55,10 +55,18 @@ Panel (d): off-diagonal singular value decay
   well-separated pair of time intervals.
 
   Singular values are normalised by sigma_1 (the largest), so we compare
-  the *relative* decay rates.  For H=0.5 (standard BM), the kernel is smoother,
-  the block has fast-decaying singular values, and a small rank k suffices.
-  For H=0.1 (rough fBM), the kernel has a singularity near zero, the block
-  decays slowly, and we need a larger rank to capture the same fraction of energy.
+  the *relative* decay rates.  For H=0.5 the kernel is min(s,t), so this block
+  is exactly rank 1.  For H=0.1 the block is not rank 1 but still decays
+  geometrically (sigma_3/sigma_1 ~ 2e-3): well-separated blocks are highly
+  compressible even for rough H.
+
+  The dashed curves show the spectrum of the FULL matrix C, which decays only
+  algebraically (fBM Karhunen-Loeve eigenvalues ~ k^{-(1+2H)}).  The slow decay
+  that limits the global rank-k rSVD therefore comes from the near-diagonal
+  singularity of |s-t|^{2H}, not from the off-diagonal blocks.  That is exactly
+  the structure a hierarchical H-matrix exploits (compress only far-field
+  blocks, keep near-diagonal blocks dense), and why a global low-rank
+  approximation is a poor fit for rough H.
 
   Contested point: the "off-diagonal block" is just N/2 x N/2.  A full H-matrix
   would recursively partition the matrix and compress each off-diagonal sub-block
@@ -141,6 +149,12 @@ def main() -> None:
     sv_rough  /= sv_rough[0]
     sv_smooth /= sv_smooth[0]
 
+    # Full-matrix spectrum for contrast (C is SPD, so eigenvalues = singular values)
+    ev_rough  = np.linalg.eigvalsh(C_fbm_lg)[::-1]
+    ev_smooth = np.linalg.eigvalsh(C_fbm_s05)[::-1]
+    ev_rough  /= ev_rough[0]
+    ev_smooth /= ev_smooth[0]
+
     # ── Figure ────────────────────────────────────────────────────────────────
     fig = plt.figure(figsize=(13, 9))
     gs  = gridspec.GridSpec(2, 2, figure=fig, hspace=0.42, wspace=0.32)
@@ -218,6 +232,11 @@ def main() -> None:
                     label=f"H = {H_rough:.2f}  (rough)")
     ax_svd.semilogy(ranks, sv_smooth[:n_sv], "s-", ms=4, lw=1.5,
                     label=f"H = {H_smooth:.2f}  (smooth / Brownian)")
+    ax_svd.semilogy(ranks, ev_rough [:n_sv], "--", color="C0", lw=1.2, alpha=0.8,
+                    label=f"full $C$, H = {H_rough:.2f}")
+    ax_svd.semilogy(ranks, ev_smooth[:n_sv], "--", color="C1", lw=1.2, alpha=0.8,
+                    label=f"full $C$, H = {H_smooth:.2f}")
+    ax_svd.set_ylim(1e-6, 1.5)
 
     threshold = 0.01
     ax_svd.axhline(threshold, color="gray", ls=":", lw=1.2, label=f"{threshold*100:.0f}% threshold")
@@ -237,8 +256,8 @@ def main() -> None:
     ax_svd.set_xlabel("rank $k$")
     ax_svd.set_ylabel("normalised singular value  $\\sigma_k / \\sigma_1$")
     ax_svd.set_title(
-        f"(d) off-diagonal block singular value decay  (N={N_lg})\n"
-        r"Rougher $H$ $\rightarrow$ slower decay $\rightarrow$ higher rank needed for accuracy",
+        f"(d) singular value decay: off-diagonal block (solid) vs full $C$ (dashed)  (N={N_lg})\n"
+        r"far-field blocks compress well; the full $C$ does not $\rightarrow$ global low rank is the bottleneck",
         fontsize=9,
     )
     ax_svd.legend(fontsize=9)
