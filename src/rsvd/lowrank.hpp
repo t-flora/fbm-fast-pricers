@@ -45,7 +45,7 @@ inline double mc_price(const Eigen::MatrixXd& Lk, int M_paths, unsigned seed) {
         Eigen::VectorXd lv = nu * (Lk * z);  // O(N*k)
         std::vector<double> log_vol(lv.data(), lv.data() + N);
         auto inno = randn(N, rng);
-        payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt), K);
+        payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt, sigma0), K);
     }
     return std::exp(-r * T) * payoff_sum / M_paths;
 }

@@ -12,7 +12,8 @@
 //   1. Compute fGn autocovariance γ(k) = (dt^{2H}/2)*((k+1)^{2H} - 2k^{2H} + (k-1)^{2H})
 //   2. Embed into 2N circulant: c = [γ(0)..γ(N-1), 0, γ(N-1)..γ(1)]
 //   3. FFT(c) → eigenvalues λ (all > 0; we throw rather than clip if any is negative)
-//   4. Per path: w[j] = sqrt(λ[j]/M) * (a+ib), x = Re(IFFT(w)), first N = fGn increments
+//   4. Per transform: w[j] = sqrt(λ[j]/M) * (a+ib); Re and Im of IFFT(w) are two
+//      independent fGn paths (first N entries each)
 //   5. log_vol = cumsum(x[0..N-1])  → fBM path; then simulate GBM prices
 
 #include <fftw3.h>
@@ -85,27 +86,46 @@ public:
     FbmSampler(const FbmSampler&) = delete;
     FbmSampler& operator=(const FbmSampler&) = delete;
 
-    // Writes one path into path[0..N-1].
+    // Writes one path into path[0..N-1] (the real part of one transform).
     // w[j] = sqrt(λ[j] / M) * (a + ib)  →  Cov(Re(IFFT(w))) = Toeplitz(γ)
     void sample(std::mt19937& rng, std::normal_distribution<double>& norm,
                 double nu, std::vector<double>& path)
     {
+        transform(rng, norm);
+        cumsum(nu, path, /*imag=*/false);
+    }
+
+    // Writes two independent paths from ONE transform: the real and imaginary parts
+    // each have the fGn covariance, and Cov(Re, Im) = 0 because λ_j = λ_{M-j}.
+    // Halves the Gaussian draws per path, which dominate the per-path cost.
+    void sample_pair(std::mt19937& rng, std::normal_distribution<double>& norm,
+                     double nu, std::vector<double>& path_re, std::vector<double>& path_im)
+    {
+        transform(rng, norm);
+        cumsum(nu, path_re, /*imag=*/false);
+        cumsum(nu, path_im, /*imag=*/true);
+    }
+
+private:
+    void transform(std::mt19937& rng, std::normal_distribution<double>& norm) {
         for (int j = 0; j < M_; ++j) {
             double a = norm(rng);
             double b = norm(rng);
             w_[j] = scale_[j] * std::complex<double>(a, b);
         }
         fftw_execute(plan_);
-        // out_[i].real() for i=0..N-1 are fGn increments (FFTW unnormalized IFFT);
-        // their cumulative sum is the fBM path
+    }
+
+    // out_[i] for i=0..N-1 are fGn increments (FFTW unnormalized IFFT);
+    // their cumulative sum is the fBM path
+    void cumsum(double nu, std::vector<double>& path, bool imag) const {
         double acc = 0.0;
         for (int i = 0; i < N_; ++i) {
-            acc += out_[i].real();
+            acc += imag ? out_[i].imag() : out_[i].real();
             path[i] = nu * acc;
         }
     }
 
-private:
     int N_, M_;
     std::vector<double> scale_;
     std::vector<std::complex<double>> w_, out_;
@@ -126,14 +146,23 @@ inline FFTTimed price_timed(int N, int M_paths, unsigned seed = 42) {
 
     auto rng = make_rng(seed);
     std::normal_distribution<double> norm(0.0, 1.0);
-    std::vector<double> log_vol(N);
+    std::vector<double> log_vol_a(N), log_vol_b(N);
     double payoff_sum = 0.0;
+    auto add_path = [&](const std::vector<double>& log_vol) {
+        auto inno = randn(N, rng);
+        payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt, sigma0), K);
+    };
 
     t0 = Clock::now();
-    for (int m = 0; m < M_paths; ++m) {
-        sampler.sample(rng, norm, nu, log_vol);
-        auto inno = randn(N, rng);
-        payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt), K);
+    int m = 0;
+    for (; m + 1 < M_paths; m += 2) {      // two fBM paths per inverse FFT
+        sampler.sample_pair(rng, norm, nu, log_vol_a, log_vol_b);
+        add_path(log_vol_a);
+        add_path(log_vol_b);
+    }
+    if (m < M_paths) {                       // odd M: one last single path
+        sampler.sample(rng, norm, nu, log_vol_a);
+        add_path(log_vol_a);
     }
     double t_mc = std::chrono::duration<double>(Clock::now() - t0).count();
     return { std::exp(-r * T) * payoff_sum / M_paths, t_construct, t_mc };

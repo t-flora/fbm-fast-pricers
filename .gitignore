@@ -49,3 +49,6 @@ report-files/style-edits.md
 
 # clangd compile database (symlink to build/compile_commands.json)
 compile_commands.json
+
+# clangd index
+.cache/

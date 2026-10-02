@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data"))
 
 import calibrate  # noqa: E402
+import params  # noqa: E402
 import validate_stability as stab  # noqa: E402
 from rfsv_model import (  # noqa: E402
     bs_call_price,
@@ -79,3 +80,13 @@ def test_rsvd_near_optimal(k):
     U, S, _ = stab.rsvd(C, k)
     err = np.linalg.norm(C - (U * S) @ U.T)
     assert err / np.sqrt((w[k:] ** 2).sum()) < 1.05
+
+
+def test_python_params_match_cpp_params():
+    import re
+    hpp = open(os.path.join(os.path.dirname(__file__), "..", "src", "common", "params.hpp")).read()
+    for py_name, cpp_name in [("H", "H"), ("NU", "nu"), ("SIGMA0", "sigma0"), ("S0", "S0"),
+                              ("K", "K"), ("T", "T"), ("R", "r")]:
+        m = re.search(rf"constexpr double {cpp_name}\s*=\s*([0-9.eE+-]+);", hpp)
+        assert m, f"{cpp_name} not found in params.hpp"
+        assert getattr(params, py_name) == pytest.approx(float(m.group(1))), py_name

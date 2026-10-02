@@ -46,7 +46,7 @@ inline CholeskyTimed price_timed(int N, int M_paths, unsigned seed = 42) {
         lv *= nu;
         std::vector<double> log_vol(lv.data(), lv.data() + N);
         auto inno = randn(N, rng);
-        payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt), K);
+        payoff_sum += asian_call_payoff(log_vol_to_prices(log_vol, inno, S0, r, dt, sigma0), K);
     }
     double t_mc = std::chrono::duration<double>(Clock::now() - t0).count();
     return { std::exp(-r * T) * payoff_sum / M_paths, t_construct, t_mc };
