@@ -2,15 +2,15 @@
 
 A prioritized roadmap written after the October 2026 review (merged in `0f0744d`; see `CHANGELOG.md`). Each item gives the evidence for it from this repo, a concrete plan, and a criterion for when it is done. Effort is a rough guess: **S** is about a day, **M** a few days, **L** a week or more.
 
-Items 1 and 2 have working prototypes in `experiments/prototype_further_work.py`; the numbers quoted for them come from that script ($N = 252$, $M = 200{,}000$ shared paths, the current parameters).
+**Status.** Items 1–3 are done (see [Done](#done) at the end; details in the README's Extensions section and `CHANGELOG.md`). The remaining items keep their numbers.
 
 ## Priorities at a glance
 
 | # | Item | Why it matters | Effort |
 |---|---|---|---|
-| 1 | Variance-corrected low-rank sampler | Removes the rSVD's 4–8% underpricing for $O(N)$ extra work per path | S |
-| 2 | Conditional geometric control variate | $27\times$ variance reduction in the prototype, for all three samplers | S–M |
-| 3 | Continuous integration | Tests exist but only run locally | S |
+| 1 | ~~Variance-corrected low-rank sampler~~ | **Done:** bias within one SE at every rank | S |
+| 2 | ~~Conditional geometric control variate~~ | **Done:** variance reduction 26–29 for every sampler | S–M |
+| 3 | ~~Continuous integration~~ | **Done:** Ubuntu + macOS on every push | S |
 | 4 | Batched sampling (GEMM, batched FFT, GPU) | Cholesky is bandwidth-bound at large $N$; a matrix-matrix product is not | S–M |
 | 5 | Faster Gaussian generator | Random numbers dominate the FFT and rSVD per-path cost | S |
 | 6 | Multithreading | Paths are independent; thread scaling also shows which methods are bandwidth-bound | M |
@@ -20,63 +20,9 @@ Items 1 and 2 have working prototypes in `experiments/prototype_further_work.py`
 | 10 | Model extensions | Mean reversion (fOU), long memory ($H > \tfrac12$), surface calibration | M each |
 | 11 | Smaller items | Normalizations, Greeks, hardware counters, timing, report polish | S each |
 
-Suggested order: 3, then 1 and 2 (they change reported numbers, so do them together and re-run once), then 4–6 (performance), then 7–10.
+Suggested order for what remains: 4–6 (performance), then 7–10.
 
 ---
-
-## 1. Variance-corrected low-rank sampler (S)
-
-**Evidence.** The rank-$k$ sampler underprices because it discards the variance in the small eigenvalues (13% of the total at $k = 128$, 40% at the first time step). That missing variance is concentrated near the diagonal. Adding independent noise with variance $\text{diag}(C - C_k)$ restores every marginal variance exactly:
-
-$$W^H \approx L_k z + D^{1/2}\varepsilon, \qquad D = \text{diag}(C - L_k L_k^\top), \quad z \sim \mathcal{N}(0, I_k),\ \varepsilon \sim \mathcal{N}(0, I_N).$$
-
-In the prototype this removes the bias:
-
-| Rank $k$ | Low-rank | Low-rank + diagonal |
-|---|---|---|
-| 8 | −6.10% | +0.12% |
-| 32 | −4.34% | +0.09% |
-| 128 | −2.10% | −0.02% |
-
-The standard error of an unpaired difference is about 0.57% (the runs share draws, so the true error is smaller), and the corrected prices are indistinguishable from exact. The extra cost is $N$ Gaussian draws and $N$ multiply-adds per path.
-
-**Plan.**
-- Add an option to `lowrank::lowrank_factor` that returns $D^{1/2}$ alongside $L_k$, and add the noise in `mc_price`.
-- Report both variants in `error_vs_rank.csv`, plus the error in the lag-1 covariance. The diagonal fix leaves the near-diagonal covariances wrong, and that error is not visible in marginals.
-- If the lag-1 error matters for some payoff, try a banded correction (bandwidth $b$, a banded Cholesky of the residual) and measure accuracy against $b$.
-
-**Done when:** the corrected sampler's price bias is within 2 standard errors at every rank in the benchmark, a test checks that its marginal variances match $\text{diag}(C)$, and the report's Section 5.5 discusses it.
-
-## 2. Conditional geometric control variate (S–M)
-
-**Evidence.** Under constant volatility the geometric Asian call has a closed form (Kemna & Vorst 1990) and is the classic control variate for the arithmetic one. Under RFSV a closed form still exists *conditionally*. With $\rho = 0$ the price shocks are independent of the volatility path, so given that path the log of the geometric average $G = (\prod_n S_{t_n})^{1/N}$ is Gaussian, with
-
-$$\mathbb{E}[\log G \mid \sigma] = \log S_0 - \frac{\Delta t}{2}\sum_{j=1}^{N} \sigma_j^2\,w_j, \qquad \text{Var}(\log G \mid \sigma) = \Delta t \sum_{j=1}^{N} \sigma_j^2\,w_j^2, \qquad w_j = \frac{N - j + 1}{N}.$$
-
-So $\mathbb{E}[(G - K)^+ \mid \sigma]$ is a Black–Scholes formula, available per path in $O(N)$. With $Y = (G - K)^+$, the estimator $\hat{p} = \overline{V - \beta\,(Y - \mathbb{E}[Y \mid \sigma])}$ is unbiased for any fixed $\beta$. In the prototype the arithmetic and geometric payoffs correlate at 0.998, and the standard error falls from 0.0213 to 0.0041 ($27\times$ variance reduction). Equivalently, $27\times$ fewer paths reach the same accuracy.
-
-**Plan.**
-- Add a helper to `asian_payoff.hpp` that returns the geometric payoff and its conditional expectation from the same volatility path and shocks. Use it in all three pricers, estimating $\beta$ from a small pilot run so the main estimate stays exactly unbiased.
-- Return the standard error from the pricers, which also removes the need to assume $\sigma_\text{payoff}$ in tests.
-- Add the same estimator to `data/rfsv_model.py`.
-- Re-frame the benchmark around *time to a target accuracy*. That comparison, a variance-reduction gain set against a faster sampler, fits the course theme well.
-
-**Done when:** all pricers report a control-variate price and standard error, a test checks that $\mathbb{E}[Y \mid \sigma]$ averages to the Monte Carlo mean of $Y$ within error, and the benchmark reports time to reach a 0.1% standard error per method.
-
-**Caveat.** The conditional closed form needs $\rho = 0$. With correlation (item 8), conditioning on the volatility path no longer leaves the shocks independent, so the control variate needs rework.
-
-## 3. Continuous integration (S)
-
-The benchmark no longer depends on the macOS `mach` API, so the whole project builds on Linux. Add a GitHub Actions workflow on `ubuntu-latest`:
-
-- `apt install libeigen3-dev libfftw3-dev`
-- `cmake -B build && cmake --build build`
-- `ctest --test-dir build`
-- `uv run pytest tests/`
-
-Optionally add a smoke run of `./run_pipeline.sh --fast --no-iv`.
-
-**Done when:** pull requests show a passing check, and a deliberately broken $\gamma(0)$ fails it.
 
 ## 4. Batched sampling as matrix-matrix products (S–M)
 
@@ -159,3 +105,23 @@ Optionally add a smoke run of `./run_pipeline.sh --fast --no-iv`.
 - **Timing robustness.** Repeats still vary by up to 15%. Use more repeats and report the spread (interquartile range) in the CSV and plots.
 - **Calibration data.** If an Oxford-Man (or other 5-minute realized variance) dataset becomes available, re-run `data/calibrate.py` and compare with the yfinance proxy.
 - **Report polish.** Four overfull boxes predate the review (Sections 4, 5 and 7).
+
+---
+
+## Done
+
+### 1. Variance-corrected low-rank sampler
+
+`lowrank::price_corrected` and `lowrank::price_cv(..., corrected=true)` add independent noise with variance $\text{diag}(C - L_k L_k^\top)$ at each step. Measured by `./build/extensions` ($N = 500$, 100,000 paths per rank): the price error, between $-3.7\%$ and $-8.1\%$ for the plain sampler, falls to within one standard error ($\approx 0.56\%$) at every rank from 2 to 128, for about 40% more MC time at $k = 32$.
+
+**Caveat found while testing.** The plain low-rank paths miss 93–100% of the increment (fGn) variance: they are far too smooth. The correction's noise is white in levels, so the increments become too rough instead (increment-variance error 119% at $k = 2$, 1.8% at $k = 64$, 16% at $k = 128$). The Asian price depends on volatility levels, so the fix works here. A payoff sensitive to path roughness would need the **banded correction** (a banded Cholesky of the residual), which remains open.
+
+### 2. Conditional geometric control variate
+
+`price_cv()` in all three samplers (shared driver `src/common/control_variate.hpp`) and `price_asian_call_cv()` in `data/rfsv_model.py`. $\beta$ is estimated on a separate pilot run of 10% of the paths, so the estimate is exactly unbiased. The variance reduction is 26–29 for every sampler at $N = 252$ and $1000$. Time to a 0.1% relative standard error at $N = 1000$ falls from 355 s to 15 s (Cholesky) and from 218 s to 9.6 s (FFT).
+
+The reduction is set by $\text{corr}(V, C) = 0.981$, not by the raw payoff correlation (0.998). The control cancels price-shock noise but not volatility-path noise, which is most of the remaining 4% of the variance. **Open follow-up:** a second control on the volatility path (or quasi-Monte Carlo, item 9) to remove that part.
+
+### 3. Continuous integration
+
+`.github/workflows/ci.yml` builds the C++ code and runs `ctest` and `pytest` on every push and pull request, on Ubuntu (GCC, apt packages) and macOS (Apple Clang, Homebrew). The full benchmark and the live-data IV script are not run in CI.

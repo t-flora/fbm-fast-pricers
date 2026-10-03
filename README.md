@@ -1,5 +1,7 @@
 # Rough Volatility Asian Option Pricer
 
+[![CI](https://github.com/t-flora/fbm-fast-pricers/actions/workflows/ci.yml/badge.svg)](https://github.com/t-flora/fbm-fast-pricers/actions/workflows/ci.yml)
+
 A C++ Monte Carlo pricer for an **arithmetic Asian call** under the **Rough Fractional Stochastic Volatility (RFSV)** model, built to compare three ways of sampling fractional Brownian motion (fBM):
 
 | Sampler | Setup | Per path | Exact? |
@@ -157,7 +159,7 @@ All numbers come from `./build/benchmark` on an Apple M2 (`-O3 -march=native`, s
 
 A single power law fits FFT and rSVD well ($\alpha = 1.02$ for both, $R^2 \geq 0.995$) but not Cholesky ($\alpha = 1.52$, $R^2 = 0.978$), whose curve bends. Local exponents between successive $N$ show why:
 
-| Method | 64→128 | 128→252 | 252→500 | 500→1000 | 1000→2000 | 2000→4000 |
+| Method | 64–128 | 128–252 | 252–500 | 500–1000 | 1000–2000 | 2000–4000 |
 |---|---|---|---|---|---|---|
 | Cholesky | 0.95 | 1.22 | 1.29 | 1.44 | 2.17 | 2.10 |
 | FFT | 0.92 | 1.02 | 1.04 | 1.02 | 1.06 | 0.97 |
@@ -215,6 +217,49 @@ All comparisons between configurations (different $H$, $\nu$ or $K$) use common 
 
 ---
 
+## Extensions: variance correction and a control variate
+
+Two opt-in additions, measured by a separate program so the main benchmark results above stay unchanged:
+
+```bash
+./build/extensions                         # ~45 s; needs benchmarks/results/reference_price.txt
+uv run python plots/plot_extensions.py     # -> plots/figures/{variance_corrected_rank,control_variate}.png
+```
+
+### Variance-corrected low-rank sampler (`lowrank::price_corrected`, `lowrank::price_cv(..., corrected=true)`)
+
+The rank-$k$ sampler underprices because it drops the variance held by small eigenvalues. Adding independent noise at each step restores every marginal variance exactly:
+
+$$W^H \approx L_k z + D^{1/2}\varepsilon, \qquad D = \text{diag}(C - L_k L_k^\top).$$
+
+At $N = 500$ with 100,000 paths per rank (standard error $\approx 0.56\%$):
+
+| Rank $k$ | 2 | 8 | 32 | 64 | 128 |
+|---|---|---|---|---|---|
+| Low-rank price error | −8.1% | −6.8% | −4.3% | −3.7% | −3.9% |
+| Low-rank + diag price error | −0.1% | −0.2% | −0.0% | +0.0% | +0.1% |
+| Increment variance error, low-rank | 100% | 100% | 100% | 99% | 93% |
+| Increment variance error, low-rank + diag | 119% | 64% | 21% | 1.8% | 16% |
+
+The price bias disappears at every rank, for about 40% more MC time at $k = 32$ (the extra $N$ Gaussian draws per path). The structural rows show what the fix does *not* do. Plain low-rank paths are far too smooth: they miss almost all of the increment (fGn) variance, which is where the roughness lives. The correction's per-step noise is white in levels, so the increments become too rough instead, and they are only close to right around $k = 64$. The Asian price depends on volatility levels, not increments, which is why the fix works for this payoff. A payoff sensitive to path roughness itself (for example realized vol-of-vol) would need a banded correction.
+
+### Conditional geometric control variate (`price_cv` in all three samplers, `price_asian_call_cv` in Python)
+
+With $\rho = 0$, the log of the geometric average $G$ is Gaussian given the volatility path, so $\mathbb{E}[(G - K)^+ \mid \sigma]$ is a Black–Scholes formula, computed per path in $O(N)$. With $V$ the arithmetic payoff and $C = (G - K)^+ - \mathbb{E}[(G - K)^+ \mid \sigma]$ (mean zero exactly), the estimator $e^{-rT}\,\overline{V - \beta C}$ is unbiased. $\beta$ comes from a separate pilot run of 10% of the paths (`src/common/control_variate.hpp`).
+
+| ($M = 10{,}000$) | Variance reduction, $N = 252$ / $1000$ | Time to 0.1% relative SE at $N = 1000$, plain / CV |
+|---|---|---|
+| Cholesky | 27 / 29 | 355 s / 15.0 s |
+| FFT | 29 / 28 | 218 s / 9.6 s |
+| rSVD $k = 32$ | 26 / 28 | 125 s / 5.5 s (but biased by ~4%) |
+| rSVD $k = 32$ + diag | 27 / 26 | 173 s / 7.8 s |
+
+The variance falls by a factor of 26–29 for every sampler, and the time to a given accuracy falls by about the same factor, pilot included. The reduction is set by the correlation between $V$ and the control $C$, which is 0.981 ($1/(1 - 0.981^2) \approx 27$); the raw arithmetic and geometric payoffs correlate more strongly (0.998). The gap is informative. Because $C$ has mean zero given the volatility path, the control cancels the noise from the price shocks but not the noise from the volatility path itself. The remaining variance, about 4% of the original, is roughly the size of that path-driven part ($\mathbb{E}[(G - K)^+ \mid \sigma]$ alone accounts for 2.7% of $\text{Var}(V)$). Removing it would take a second control on the volatility path, or quasi-Monte Carlo. A smaller variance does not fix bias: the plain rSVD sampler converges quickly to the wrong price. The closed form needs $\rho = 0$, since conditioning on the volatility path must leave the price shocks independent.
+
+Both extensions are covered by the test suites: the closed form matches a Monte Carlo average for a fixed volatility path, the control-variate prices of the exact samplers agree, the corrected sampler's marginal variances equal $\text{diag}(C)$ to $10^{-16}$, and its price matches the exact one, while the uncorrected sampler's bias is detected.
+
+---
+
 ## Calibration
 
 `data/calibrate.py` fits the log-vol variogram $\mathbb{E}[(\log\sigma_{t+\Delta} - \log\sigma_t)^2] = \nu^2 \Delta^{2H}$ by log-log OLS. The slope gives $2H$ and the intercept gives $\nu$, with $\Delta$ in years to match the engine.
@@ -236,12 +281,11 @@ The yfinance proxy recovers $H$ close to the published $0.1$. Its $\nu$ is infla
 
 `TODO.md` has the full prioritized roadmap, with evidence, plans and done-when criteria. The top items:
 
-1. **Variance-corrected low-rank sampler.** Adding independent noise with variance $\text{diag}(C - C_k)$ restores every marginal variance. In a prototype (`experiments/prototype_further_work.py`) this cuts the rank-32 bias from $-4.3\%$ to $+0.1\%$ at $O(N)$ extra cost per path.
-2. **Conditional geometric control variate.** With $\rho = 0$, the geometric Asian payoff has a closed-form expectation given each volatility path. In the same prototype it reduces the variance $27\times$.
-3. **Continuous integration** for the C++ and Python test suites.
-4. **Performance:** batch paths into matrix-matrix products (Cholesky is bandwidth-bound at large $N$), use a faster Gaussian generator (it dominates the FFT per-path cost), and add multithreading.
-5. **A hierarchical (HODLR) sampler**, which exploits the rank-3 far-field blocks and works on non-uniform grids where the FFT cannot.
-6. **Spot-vol correlation $\rho < 0$**, needed for a real skew comparison. This moves to a Volterra (rough Bergomi) representation, where the Hybrid Scheme of Bennedsen, Lunde & Pakkanen (2017) becomes the relevant fast method.
+Items 1–3 of the roadmap are done: the two extensions above, and CI on every push (Ubuntu with GCC, macOS with Apple Clang). The top remaining items:
+
+1. **Performance:** batch paths into matrix-matrix products (Cholesky is bandwidth-bound at large $N$), use a faster Gaussian generator (it dominates the FFT per-path cost), and add multithreading.
+2. **A hierarchical (HODLR) sampler**, which exploits the rank-3 far-field blocks and works on non-uniform grids where the FFT cannot.
+3. **Spot-vol correlation $\rho < 0$**, needed for a real skew comparison. This moves to a Volterra (rough Bergomi) representation, where the Hybrid Scheme of Bennedsen, Lunde & Pakkanen (2017) becomes the relevant fast method.
 
 ---
 
@@ -249,14 +293,19 @@ The yfinance proxy recovers $H$ close to the published $0.1$. Its $\nu$ is infla
 
 ```
 src/common/        params.hpp (model + run parameters), covariance.hpp (fBM kernel),
-                   asian_payoff.hpp (vol path -> price path -> payoff), rng.hpp
+                   asian_payoff.hpp (vol path -> price path -> payoff), rng.hpp,
+                   control_variate.hpp (geometric control-variate MC driver)
 src/cholesky/      cholesky.hpp + cholesky_pricer.cpp
 src/fft/           fft.hpp + fft_pricer.cpp
 src/rsvd/          lowrank.hpp (sampler), rsvd.hpp (Halko et al. Alg. 4.4), rsvd_pricer.cpp
-benchmarks/        benchmark.cpp -> results/{time_vs_N,error_vs_rank}.csv, reference_price.txt
+benchmarks/        benchmark.cpp -> results/{time_vs_N,error_vs_rank}.csv, reference_price.txt;
+                   extensions.cpp -> results/{variance_corrected_rank,control_variate}.csv
 data/              params.py (shared model parameters), calibrate.py, rfsv_model.py (numpy engine),
                    validate_*.py, profile_memory.py
-plots/             plot_scaling.py, plot_structure.py, plot_sensitivity.py; figures/ (generated)
+plots/             plot_scaling.py, plot_structure.py, plot_sensitivity.py, plot_extensions.py;
+                   figures/ (generated)
+experiments/       prototype_further_work.py (prototypes for roadmap items)
+.github/workflows/ ci.yml (build + both test suites on every push and pull request)
 report-files/      LaTeX report (main.tex + sec*.tex)
 ALGORITHMS.md      Line-by-line walkthrough of the C++ samplers
 tests/             test_samplers.cpp (C++, via ctest) and test_python.py (pytest)

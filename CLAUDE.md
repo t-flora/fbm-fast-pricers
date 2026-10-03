@@ -22,7 +22,11 @@ cmake --build build --parallel
 
 # Tests — run after any change to a sampler, the Python engine, or calibrate.py
 ./build/test_samplers      # or: ctest --test-dir build
-uv run pytest tests/
+uv run pytest tests/       # CI runs both on every push (.github/workflows/ci.yml)
+
+# Extensions (variance-corrected low-rank, control variate); needs reference_price.txt
+./build/extensions
+uv run python plots/plot_extensions.py
 ```
 
 ## Data & Calibration
@@ -122,6 +126,8 @@ final-project/
 **FFT sampler yields two paths per transform.** `FbmSampler::sample_pair` returns the real and imaginary parts of one inverse FFT as two independent fGn paths (Cov(Re, Im) = 0 since λ_j = λ_{2N−j}); this halves the Gaussian draws, which dominate the FFT per-path cost. Tests check both parts' covariance and their independence.
 
 **Python RNG streams.** Log-vol uses `default_rng(seed)`, price shocks `default_rng([seed, 1])` — never `seed + 1`, which collides with another run's log-vol stream. Experiments comparing configurations use common random numbers (same seeds across H, ν, K).
+
+**Extensions are opt-in, never defaults.** `lowrank::price_corrected` (adds diag(C − L_k L_kᵀ) noise; fixes the price but makes increments too rough) and `price_cv()` in all three samplers (conditional geometric control variate via `src/common/control_variate.hpp`; β from a separate 10% pilot so the estimate is exactly unbiased; needs ρ = 0). The plain `price()`/`price_timed()` paths and RNG order are untouched, so the main benchmark CSVs and the report's numbers stay valid. Extension results live in their own CSVs (`variance_corrected_rank.csv`, `control_variate.csv`) from `./build/extensions`.
 
 **FFTW plan reuse.** The FFT pricer creates the c2c forward plan (for eigenvalue computation) and the c2c backward plan (for per-path synthesis) once, then calls `fftw_execute` in the MC loop.
 
