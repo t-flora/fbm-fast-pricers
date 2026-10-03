@@ -111,6 +111,66 @@ def price_asian_call(H: float, nu: float, K: float, T: float = 1.0,
     return float(np.exp(-r * T) * np.mean(payoff))
 
 
+def asian_cv_terms(log_vol: np.ndarray, S0: float, r: float, dt: float, K: float,
+                   seed: int = 42) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Per-path terms of the conditional geometric control variate.
+
+    log_vol: (M, N) total log-volatility paths (mu0 already added).  Returns
+    (V, Y, EY): the arithmetic payoff, the geometric payoff, and its closed-form
+    conditional expectation E[Y | sigma], all undiscounted.  The price shocks use the
+    same stream as _simulate_price_paths(seed=seed), so V matches price_asian_call.
+
+    With rho = 0, log G = log S0 + sum_j w_j [(r - sigma_j^2/2) dt + sigma_j sqrt(dt) Z_j],
+    w_j = (N - j) / N, is Gaussian given sigma with mean m and variance v below, so
+    E[(G - K)^+ | sigma] = e^{m + v/2} Phi(d1) - K Phi(d1 - sqrt v).
+    """
+    M, N = log_vol.shape
+    sigma = np.exp(log_vol)
+    Z = np.random.default_rng([seed, 1]).standard_normal((M, N))
+    drift = (r - 0.5 * sigma ** 2) * dt
+    log_S = np.log(S0) + np.cumsum(drift + sigma * np.sqrt(dt) * Z, axis=1)
+    V = np.maximum(np.exp(log_S).mean(axis=1) - K, 0.0)
+    Y = np.maximum(np.exp(log_S.mean(axis=1)) - K, 0.0)
+    w = (N - np.arange(N)) / N
+    m = np.log(S0) + (w * drift).sum(axis=1)
+    v = dt * (w ** 2 * sigma ** 2).sum(axis=1)
+    sd = np.sqrt(v)
+    d1 = (m - np.log(K) + v) / sd
+    EY = np.exp(m + 0.5 * v) * sp_norm.cdf(d1) - K * sp_norm.cdf(d1 - sd)
+    return V, Y, EY
+
+
+def price_asian_call_cv(H: float, nu: float, K: float, T: float = 1.0,
+                        S0: float = 100.0, r: float = 0.0,
+                        N: int = 252, M: int = 10000, seed: int = 42,
+                        mu0: float = MU0, pilot_M: int | None = None) -> dict:
+    """
+    Arithmetic Asian call with the conditional geometric control variate.
+
+    Estimator e^{-rT} mean(V - beta (Y - E[Y|sigma])), with beta = Cov(V, C) / Var(C)
+    estimated on a separate pilot run (so the estimate is exactly unbiased).
+    Returns dict(price, se, price_plain, se_plain, beta); price_plain uses the same
+    paths as price_asian_call(..., seed=seed).
+    """
+    dt = T / N
+    disc = np.exp(-r * T)
+    pilot_M = pilot_M or max(2000, M // 10)
+
+    def terms(n, s):
+        log_vol = simulate_log_vol_paths(N, n, H, nu, dt, seed=s) + mu0
+        V, Y, EY = asian_cv_terms(log_vol, S0, r, dt, K, seed=s)
+        return V, Y - EY
+
+    Vp, Cp = terms(pilot_M, seed + 1_000_003)
+    beta = np.cov(Vp, Cp)[0, 1] / Cp.var(ddof=1)
+    V, C = terms(M, seed)
+    est = V - beta * C
+    return dict(price=float(disc * est.mean()), se=float(disc * est.std(ddof=1) / np.sqrt(M)),
+                price_plain=float(disc * V.mean()), se_plain=float(disc * V.std(ddof=1) / np.sqrt(M)),
+                beta=float(beta))
+
+
 def price_european_call(H: float, nu: float, K: float, T: float = 1.0,
                         S0: float = 100.0, r: float = 0.0,
                         N: int = 252, M: int = 10000, seed: int = 42,

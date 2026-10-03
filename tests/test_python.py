@@ -24,8 +24,11 @@ import calibrate  # noqa: E402
 import params  # noqa: E402
 import validate_stability as stab  # noqa: E402
 from rfsv_model import (  # noqa: E402
+    asian_cv_terms,
     bs_call_price,
     build_fgn_eigenvalues,
+    price_asian_call,
+    price_asian_call_cv,
     price_european_call,
     simulate_log_vol_paths,
 )
@@ -90,3 +93,25 @@ def test_python_params_match_cpp_params():
         m = re.search(rf"constexpr double {cpp_name}\s*=\s*([0-9.eE+-]+);", hpp)
         assert m, f"{cpp_name} not found in params.hpp"
         assert getattr(params, py_name) == pytest.approx(float(m.group(1))), py_name
+
+
+def test_geometric_conditional_expectation_matches_mc():
+    # Fix one volatility path; average the geometric payoff over many price shocks
+    N, M, dt = 64, 200_000, 1.0 / 64
+    one = simulate_log_vol_paths(N, 1, 0.10, 0.52, dt, seed=4) + params.MU0
+    V, Y, EY = asian_cv_terms(np.repeat(one, M, axis=0), 100.0, 0.0, dt, 100.0, seed=8)
+    assert np.allclose(EY, EY[0])
+    assert abs(Y.mean() - EY[0]) < 4 * Y.std() / np.sqrt(M)
+
+
+def test_control_variate_is_unbiased_and_effective():
+    kw = dict(H=params.H, nu=params.NU, K=100.0, N=64, M=50_000)
+    res = price_asian_call_cv(seed=3, **kw)
+    # The plain part reuses exactly the paths of price_asian_call
+    assert res["price_plain"] == pytest.approx(price_asian_call(seed=3, **kw), rel=1e-12)
+    # CV and plain agree within error; variance reduction is large
+    assert abs(res["price"] - res["price_plain"]) < 4 * res["se_plain"]
+    assert (res["se_plain"] / res["se"]) ** 2 > 10
+    # Independent runs agree within the (much smaller) CV error
+    other = price_asian_call_cv(seed=4, **kw)
+    assert abs(res["price"] - other["price"]) < 4 * np.hypot(res["se"], other["se"])
