@@ -149,8 +149,10 @@ by exploiting structure in the covariance matrix $C$:
 Section~\ref{sec:foundations} develops the mathematical properties of $C$ that each
 method exploits.  Section~\ref{sec:algorithms} describes each algorithm and its
 complexity.  Sections~\ref{sec:benchmarks} and~\ref{sec:validation} present empirical
-timing, memory, accuracy, and model validation results.
+timing, memory, accuracy, and model validation results.  Section~\ref{sec:extensions}
+adds two extensions: a variance correction for the low-rank sampler and a conditional
+control variate that applies to all three samplers.
 
-The project does not address variance reduction (quasi-Monte Carlo, control variates),
-model extensions beyond fBM-RFSV (rough Bergomi, multifactor), or GPU parallelism,
-though Section~\ref{sec:futurework} situates each of these as a natural next step.
+The project does not address quasi-Monte Carlo, model extensions beyond fBM-RFSV
+(rough Bergomi, multifactor), or GPU parallelism, though Section~\ref{sec:futurework}
+situates each of these as a natural next step.

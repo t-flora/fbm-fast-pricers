@@ -189,21 +189,25 @@ calls \texttt{price()} directly.
 \label{sec:tests}
 
 Several results in earlier drafts of this report came from bugs that nothing
-checked, so both engines now have test suites that run in a few seconds and gate
-the benchmark pipeline.  The C++ suite (\texttt{tests/test\_samplers.cpp}, 21 checks)
+checked, so both engines now have test suites that run in a few seconds, gate
+the benchmark pipeline, and run in continuous integration on every push (Ubuntu with
+GCC and macOS with Apple Clang).  The C++ suite (\texttt{tests/test\_samplers.cpp},
+30 checks)
 verifies that $LL^\top = C$ to $10^{-15}$; that every circulant eigenvalue minimum
 matches the closed form~\eqref{eq:lambda-min} to $10^{-8}$ for $H \in
 \{0.05, 0.10, 0.30, 0.50\}$ and $N \in \{64, 252, 1000\}$; that the sample covariance of
 200{,}000 FFT paths, real and imaginary, matches $C$ within six standard errors per
 entry, with no correlation between the two halves; that the rSVD error is within
 $5\%$ of the Eckart--Young optimum, including $k$ close to $N$; and that Cholesky and
-FFT prices agree within Monte Carlo error.  The Python suite (16 tests) checks the
-same eigenvalue and covariance properties for the numpy engine, the Black--Scholes
-limit at $\nu = 0$, recovery of known $(H, \nu)$ by the variogram calibration, and that
+FFT prices agree within Monte Carlo error.  Nine further checks cover the extensions
+of §\ref{sec:extensions}, including a negative control that the uncorrected low-rank
+sampler's bias is detected.  The Python suite (18 tests) checks the same eigenvalue and
+covariance properties for the numpy engine, the Black--Scholes limit at $\nu = 0$,
+recovery of known $(H, \nu)$ by the variogram calibration, the control variate, and that
 the C++ and Python parameter files agree.
 
 I checked that the suites catch the bug they were written for: reintroducing the
-halved $\gamma(0)$ makes four C++ checks and eight Python tests fail.
+halved $\gamma(0)$ makes seven C++ checks and eight Python tests fail.
 
 \subsection{Optimization opportunities not implemented}
 \label{sec:opt-opportunities}

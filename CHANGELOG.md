@@ -25,6 +25,13 @@ Implements items 1–3 of the roadmap in `TODO.md` as *additional* methods. The 
 - **The control variate's limit is volatility-path noise.** The reduction is set by $\text{corr}(V, C) = 0.981$, not by the raw arithmetic–geometric correlation of 0.998. Because $C$ has mean zero given the volatility path, it cannot remove the path-driven variance. That part is most of what remains: $\mathbb{E}[(G - K)^+ \mid \sigma]$ alone carries 2.7% of $\text{Var}(V)$, against about 4% left after the control.
 - **A smaller standard error does not fix bias.** With the control variate, the plain rSVD sampler converges $27\times$ faster to a price that is still about 4% too low.
 
+- **Report**:
+  - new Section 7, "Extensions: variance correction and a control variate", with both figures and a results table;
+  - the derivation of the conditional geometric expectation, and Kemna & Vorst (1990) added to the bibliography;
+  - Future Work renumbered to Section 8, gaining a subsection on the two open follow-ups (banded correction, a second control on the volatility path);
+  - abstract, introduction and testing section updated (30 C++ checks, 18 Python tests, CI; the halved-$\gamma(0)$ mutation now fails 7 C++ checks and 8 Python tests).
+- **CI verified:** the first run on GitHub passed on both Ubuntu and macOS.
+
 ### Fixed
 
 - `benchmarks/extensions.cpp` includes `<cstdlib>` for `std::exit` (needed by GCC).

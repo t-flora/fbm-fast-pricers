@@ -257,7 +257,7 @@ Figures live in `plots/figures/` (gitignored); `main.tex` uses `\graphicspath{{.
 If figures are missing, copy from `plots/*.png`: `cp plots/*.png plots/figures/`.
 The `.bbl` file is generated once by `bibtex main`; after that, single `pdflatex` passes suffice.
 
-**Section files:** `sec1-intro.tex` through `sec7-futurework.tex` in `report-files/`.
+**Section files:** `sec1-intro.tex` through `sec8-futurework.tex` in `report-files/` (`sec7-extensions.tex` covers the variance correction and control variate).
 Track drafting status and all post-draft corrections in `report-plan.md` (gitignored).
 
 ## Commit Convention

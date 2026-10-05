@@ -42,6 +42,18 @@ $O(N^2 k) = O(252^2 \cdot 64) \approx 4 \times 10^6$ flops for construction;
 the H-matrix would reduce this by roughly $\log_2 252 \approx 8$ for equal
 per-block rank, which becomes worthwhile at $N \geq 1000$.
 
+\subsection{Beyond the two extensions}
+\label{sec:ext-future}
+
+Each extension of §\ref{sec:extensions} leaves one gap.  The variance correction gets
+the marginal variances right but the increments wrong; replacing the diagonal noise by
+a banded factorization of the residual $C - L_k L_k^\top$ (bandwidth $b$) would also
+restore the near-diagonal covariances that carry the roughness, at $O(Nb)$ extra cost
+per path.  The control variate removes the price-shock noise but leaves the
+volatility-path noise, about 4\% of the original variance; a second control built on
+the volatility path, for instance the integrated variance $\int_0^T \sigma_t^2\,dt$ whose
+mean~\eqref{eq:intvar} is known in closed form, could remove part of what remains.
+
 \subsection{Hybrid Scheme for rough Bergomi}
 \label{sec:hybrid-future}
 
