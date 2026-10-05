@@ -104,7 +104,13 @@ Suggested order for what remains: 4–6 (performance), then 7–10.
 - **Hardware counters.** On Linux, measure actual DRAM traffic with `perf` (uncore counters) to replace the effective-bandwidth estimate.
 - **Timing robustness.** Repeats still vary by up to 15%. Use more repeats and report the spread (interquartile range) in the CSV and plots.
 - **Calibration data.** If an Oxford-Man (or other 5-minute realized variance) dataset becomes available, re-run `data/calibrate.py` and compare with the yfinance proxy.
-- **Report polish.** Four overfull boxes predate the review (Sections 4, 5 and 7).
+- **Report polish.** Five small overfull boxes remain (Sections 4, 5, 7 and 8; all under 32pt).
+- **A real fast mode for the pipeline.** `run_pipeline.sh --fast` shrinks the Python experiments but still runs the full benchmark (about 8 minutes) and the extensions (about 45 s). Add a quick mode to `benchmark` and `extensions` (for example $N \leq 500$, fewer paths, no 500k-path reference), so the whole pipeline can run in a few minutes.
+- **CI smoke test of the analysis scripts.** CI runs only the unit tests; the plotting and validation scripts are never exercised automatically. Once the quick mode exists, add a CI job running `./run_pipeline.sh --fast --no-iv` and checking that every figure is produced.
+- **Test the Oxford-Man loader.** `calibrate.load_oxford_man` (the `Symbol` filter and header handling) has no test because the data is not in the repo. A tiny synthetic CSV in the published long format would cover it.
+- **Use the control variate in the validation experiments.** `validate_asian.py`, `plot_sensitivity.py` and `validate_convergence.py` still use plain Monte Carlo. Switching to `price_asian_call_cv` would cut their noise by a factor of about 27 at no extra cost; the convergence study could show plain and control-variate curves side by side.
+- **Variance correction in the Python engine.** The corrected low-rank sampler exists only in C++.
+- **Watch the Ubuntu 26 runner migration.** GitHub moves `ubuntu-latest` to Ubuntu 26 from October 19, 2026, with a newer GCC and Eigen. If CI breaks, fix it or pin `ubuntu-24.04`.
 
 ---
 
