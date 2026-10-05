@@ -54,8 +54,12 @@ generation, not the transform, dominates its per-path cost.  The rank-32 rSVD me
 $10\times$ faster than Cholesky at $N = 4000$ but underprices by $4$--$8\%$ at every
 rank tested.  That bias follows the fraction of path variance the truncation discards
 ($13\%$ even at $k = 128$), which the usual Frobenius error ($1.2\%$) badly understates.
-Finally, a variance-matched comparison shows that about 70\% of the rough-volatility
-premium on the at-the-money Asian price is due to roughness itself.
+A variance-matched comparison shows that about 70\% of the rough-volatility premium on
+the at-the-money Asian price is due to roughness itself.  Two extensions address the
+remaining weaknesses: restoring the discarded variance as per-step noise removes the
+low-rank bias, and a control variate built on the geometric Asian payoff, which has a
+closed-form expectation given each volatility path, cuts the Monte Carlo variance by a
+factor of 26--29 for every sampler.
 \end{abstract}
 
 \input{sec1-intro}
@@ -64,7 +68,8 @@ premium on the at-the-money Asian price is due to roughness itself.
 \input{sec4-implementation}
 \input{sec5-benchmarks}
 \input{sec6-validation}
-\input{sec7-futurework}
+\input{sec7-extensions}
+\input{sec8-futurework}
 
 \medskip
 

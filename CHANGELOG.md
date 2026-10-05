@@ -1,6 +1,43 @@
 # Changelog
 
-## Review, October 2026 (branch `review-fixes`)
+## Extensions and CI, October 2026 (branch `feat/variance-correction-and-cv`)
+
+Implements items 1–3 of the roadmap in `TODO.md` as *additional* methods. The existing pricers, the main benchmark CSVs, and the report's numbers are unchanged; the new methods are opt-in and measured by a separate program.
+
+### Added
+
+- **Variance-corrected low-rank sampler** (`src/rsvd/lowrank.hpp`: `residual_sd`, `price_corrected`, `price_corrected_timed`, and `price_cv(..., corrected=true)`). It adds independent noise with variance $\text{diag}(C - L_k L_k^\top)$ at each step, which restores every marginal variance. At $N = 500$ the price bias falls from between $-3.7\%$ and $-8.1\%$ to within one standard error ($\approx 0.56\%$) at every rank, for about 40% more MC time at $k = 32$.
+- **Conditional geometric control variate**:
+  - shared driver `src/common/control_variate.hpp` (`mc_control_variate`, `CVResult`);
+  - per-path terms `asian_sample()` in `src/common/asian_payoff.hpp`;
+  - `price_cv()` in all three samplers, and `asian_cv_terms()` / `price_asian_call_cv()` in `data/rfsv_model.py`.
+  
+  It estimates $\beta$ on a separate 10% pilot run, so the estimate is exactly unbiased, and reports the standard error with every price. Variance reduction is 26–29 for every sampler at $N = 252$ and $1000$; at $N = 1000$ the time to a 0.1% relative standard error falls from 355 s to 15 s (Cholesky) and from 218 s to 9.6 s (FFT).
+- **Extensions benchmark** `benchmarks/extensions.cpp`, writing `variance_corrected_rank.csv` and `control_variate.csv`, and `plots/plot_extensions.py`, producing `variance_corrected_rank.png` and `control_variate.png`.
+- **Tests**:
+  - C++, 9 new checks (30 in total): the arithmetic payoff of `asian_sample()` equals the plain payoff to $10^{-15}$; for a fixed volatility path the closed-form conditional expectation matches a 400,000-draw Monte Carlo average; the Cholesky and FFT control-variate prices agree; the variance reduction exceeds 10; the corrected sampler's marginal variances equal $\text{diag}(C)$ and its price matches the exact one; and, as a negative control, the uncorrected sampler's bias is detected.
+  - Python, 2 new tests: the closed form against Monte Carlo; the control-variate estimator's plain part reuses exactly the paths of `price_asian_call`, it agrees across seeds, and its variance reduction exceeds 10.
+- **Continuous integration**: `.github/workflows/ci.yml` builds and runs both test suites on every push and pull request, on Ubuntu (GCC) and macOS (Apple Clang). Verified locally beforehand with a GCC 16 build (clean under `-Wall -Wextra`, all tests passing).
+
+### Findings
+
+- **The variance correction fixes the price, not the roughness.** Plain low-rank paths miss 93–100% of the increment (fGn) variance. The correction's per-step noise is white in levels, which makes increments too rough instead (increment-variance error 119% at $k = 2$, 1.8% at $k = 64$, 16% at $k = 128$). The Asian price depends on volatility levels, so it is unaffected; roughness-sensitive payoffs would need a banded correction.
+- **The control variate's limit is volatility-path noise.** The reduction is set by $\text{corr}(V, C) = 0.981$, not by the raw arithmetic–geometric correlation of 0.998. Because $C$ has mean zero given the volatility path, it cannot remove the path-driven variance. That part is most of what remains: $\mathbb{E}[(G - K)^+ \mid \sigma]$ alone carries 2.7% of $\text{Var}(V)$, against about 4% left after the control.
+- **A smaller standard error does not fix bias.** With the control variate, the plain rSVD sampler converges $27\times$ faster to a price that is still about 4% too low.
+
+- **Report**:
+  - new Section 7, "Extensions: variance correction and a control variate", with both figures and a results table;
+  - the derivation of the conditional geometric expectation, and Kemna & Vorst (1990) added to the bibliography;
+  - Future Work renumbered to Section 8, gaining a subsection on the two open follow-ups (banded correction, a second control on the volatility path);
+  - abstract, introduction and testing section updated (30 C++ checks, 18 Python tests, CI; the halved-$\gamma(0)$ mutation now fails 7 C++ checks and 8 Python tests).
+- **CI verified:** the first run on GitHub passed on both Ubuntu and macOS.
+
+### Fixed
+
+- `benchmarks/extensions.cpp` includes `<cstdlib>` for `std::exit` (needed by GCC).
+
+
+## Review, October 2026 (branch `review-fixes`, merged in `0f0744d`)
 
 A correctness review of the whole project, followed by fixes, new tests, re-run experiments, and a revised README and report. Several results in the previous version were caused by bugs or by experiments with too little statistical power. They are listed under [Retracted results](#retracted-results) so the old report text can be checked against the new one.
 

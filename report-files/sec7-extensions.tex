@@ -1,0 +1,150 @@
+\section{Extensions: variance correction and a control variate}
+\label{sec:extensions}
+
+Two weaknesses stand out in the results above: the low-rank sampler underprices at
+every rank (§\ref{sec:errorrank}), and plain Monte Carlo needs $\approx 130{,}000$
+paths for a $1\%$ confidence half-width (§\ref{sec:convergence}).  This section adds
+one remedy for each.  Both are opt-in methods alongside the original pricers, measured
+by a separate program (\texttt{./build/extensions}), so none of the results in the
+preceding sections change.
+
+\subsection{Variance-corrected low-rank sampler}
+\label{sec:varcorr}
+
+The low-rank sampler underprices because it discards the variance held by the small
+eigenvalues of $C$.  The simplest repair puts that variance back at each time step as
+independent noise:
+\begin{equation}
+  \label{eq:varcorr}
+  W^H \approx L_k z + D^{1/2}\varepsilon, \qquad
+  D = \mathrm{diag}\bigl(C - L_k L_k^\top\bigr), \quad
+  z \sim \mathcal{N}(0, I_k),\ \varepsilon \sim \mathcal{N}(0, I_N).
+\end{equation}
+Every marginal variance $\mathrm{Var}(W^H(t_m))$ is then exact by construction, while the
+off-diagonal covariances remain those of $C_k$.  The cost is $N$ extra Gaussian draws and
+$N$ multiply-adds per path.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{variance_corrected_rank.png}
+  \caption{Variance-corrected vs.\ plain low-rank sampler.
+    \textbf{(a)} Price error against the reference ($\pm 2$ standard errors shaded).
+    \textbf{(b)} Mean relative error of the increment (fGn) variances.
+    \textbf{(c)} Mean relative error of the lag-1 increment covariances.
+    Panels (b) and (c) are exact, computed from each sampler's covariance matrix.
+    Controlled: $N = 500$, $H = 0.10$, $\nu = 0.52$, $\sigma_0 = 0.2$, $M = 100{,}000$
+    paths per rank.
+    Independent: rank $k$, sampler.
+    Dependent: relative errors (\%).}
+  \label{fig:varcorr}
+\end{figure}
+
+The correction removes the bias (Figure~\ref{fig:varcorr}(a)).  The plain sampler's
+price error ranges from $-8.1\%$ at $k = 2$ to $-3.9\%$ at $k = 128$.  The corrected
+sampler's error is within one standard error ($\approx 0.56\%$) at every rank, from
+$-0.5\%$ to $+0.3\%$, for about 40\% more MC time at $k = 32$ (2.0~s to 2.8~s per
+100{,}000 paths).
+
+The key pitfall is that correct marginals do not mean correct paths.  The plain
+low-rank paths are far too smooth: they miss 93--100\% of the increment variance
+(Figure~\ref{fig:varcorr}(b)), which is where the roughness lives.  The correction's
+noise is white in levels, so it overshoots and makes the increments too rough instead:
+the increment-variance error is $119\%$ at $k = 2$, falls to $1.8\%$ at $k = 64$, and rises
+again to $16\%$ at $k = 128$.  The lag-1 increment covariance improves from about $100\%$
+wrong to $14$--$18\%$ wrong at $k \geq 64$.  The Asian price depends on the volatility
+levels $\sigma_t$, not on their increments, which is why~\eqref{eq:varcorr} prices it
+correctly.  A payoff that depends on path roughness itself, such as an option on
+realized volatility, would need the residual's near-diagonal covariance as well, for
+example through a banded Cholesky factor (§\ref{sec:futurework}).
+
+\subsection{Conditional geometric control variate}
+\label{sec:cv}
+
+For constant volatility, the geometric-average Asian call has a closed-form price
+\citep{kemna1990pricing} and is the classic control variate for the arithmetic one
+\citep{glasserman2004monte}.  Under RFSV no such closed form exists, but one exists
+\emph{conditionally} on the volatility path.  With $\rho = 0$ the price shocks are
+independent of $\sigma$, so given the path, the log of the geometric average
+$G = (\prod_{n} S_{t_n})^{1/N}$ is Gaussian with
+\begin{equation}
+  \label{eq:geomcond}
+  m = \log S_0 + \Delta t \sum_{j=1}^{N} w_j\bigl(r - \tfrac{1}{2}\sigma_j^2\bigr),
+  \qquad
+  v = \Delta t \sum_{j=1}^{N} w_j^2 \sigma_j^2,
+\end{equation}
+where $w_j = (N - j + 1)/N$ is the share of the averaging window that the $j$-th shock
+affects.  The
+conditional expectation of $Y = (G - K)^+$ is then a Black--Scholes formula,
+$\mathbb{E}[Y \mid \sigma] = e^{m + v/2}\,\Phi(d_1) - K\,\Phi(d_1 - \sqrt{v})$ with
+$d_1 = (m - \log K + v)/\sqrt{v}$, computed per path in $O(N)$.
+
+With $V$ the arithmetic payoff and $C = Y - \mathbb{E}[Y \mid \sigma]$, which has mean zero
+exactly, the estimator
+\begin{equation}
+  \hat{p}_\mathrm{cv} = e^{-rT}\,\frac{1}{M}\sum_{m=1}^{M}\bigl(V^{(m)} - \beta\,C^{(m)}\bigr)
+\end{equation}
+is unbiased for any fixed $\beta$.  I estimate the variance-optimal
+$\beta = \mathrm{Cov}(V, C)/\mathrm{Var}(C)$ on a separate pilot run of 10\% of the paths,
+so the main estimate stays exactly unbiased; the variance is then reduced by the
+factor $1/(1 - \mathrm{corr}(V, C)^2)$.  A single driver implements this for all three
+samplers.
+
+\begin{table}[t]
+  \caption{Conditional geometric control variate ($M = 10{,}000$).  Time to reach a
+    $0.1\%$ relative standard error is extrapolated from the measured standard error
+    and per-path cost, including setup and, for the control variate, the pilot run.}
+  \label{tab:cv}
+  \centering
+  \small
+  \setlength{\tabcolsep}{5pt}
+  \begin{tabular}{lrrrr}
+    \toprule
+    & \multicolumn{2}{c}{Variance reduction} & \multicolumn{2}{c}{Time to 0.1\% SE ($N = 1000$)} \\
+    Sampler & $N = 252$ & $N = 1000$ & plain & control variate \\
+    \midrule
+    Cholesky             & 27.2 & 29.3 & 355~s & 15.0~s \\
+    Circulant + FFT      & 28.8 & 28.1 & 218~s & 9.6~s \\
+    rSVD ($k = 32$)      & 25.7 & 27.7 & 125~s & 5.5~s \\
+    rSVD ($k = 32$) + diag & 26.6 & 25.8 & 173~s & 7.8~s \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{control_variate.png}
+  \caption{Conditional geometric control variate.
+    \textbf{(a)} Variance reduction $(\mathrm{SE}_\mathrm{plain}/\mathrm{SE}_\mathrm{cv})^2$
+    for each sampler.
+    \textbf{(b)} Time to a $0.1\%$ relative standard error at $N = 1000$, plain (light) and
+    control variate (dark), on a log scale.
+    Controlled: $H = 0.10$, $\nu = 0.52$, $\sigma_0 = 0.2$, $M = 10{,}000$.
+    Independent: sampler, $N$, estimator.
+    Dependent: variance reduction and time (s).}
+  \label{fig:cv}
+\end{figure}
+
+Table~\ref{tab:cv} and Figure~\ref{fig:cv} show the results.  The variance falls by a
+factor of 26--29 for every sampler at both grid sizes, and the time to a given accuracy
+falls by about the same factor: at $N = 1000$, from 355~s to 15~s for Cholesky and from
+218~s to 9.6~s for FFT.  For the purposes of this report, that is a larger saving than
+any change of sampler: switching from Cholesky to FFT at $N = 1000$ gains $1.6\times$, while
+the control variate gains about $23$--$24\times$ within either.
+
+Two details limit the gain.  First, the reduction is set by
+$\mathrm{corr}(V, C) = 0.981$, giving $1/(1 - 0.981^2) \approx 27$, not by the higher raw
+correlation of the two payoffs (0.998).  Because $C$ has mean zero given the volatility
+path, it cancels the noise from the price shocks but not the noise from the volatility
+path itself, and that path-driven part is most of the roughly 4\% of variance that
+remains: $\mathbb{E}[Y \mid \sigma]$ alone carries 2.7\% of $\mathrm{Var}(V)$.  A second
+control on the volatility path, or quasi-Monte Carlo (§\ref{sec:qmc-future}), would be
+needed to remove it.  Second, a smaller standard error does not fix bias.  The plain
+rSVD sampler with the control variate converges $27\times$ faster to a price that is still
+about 4\% too low; combined with the correction of §\ref{sec:varcorr}, it reaches an
+accurate price in 7.8~s at $N = 1000$.
+
+\paragraph{Limitations: }
+The conditional closed form~\eqref{eq:geomcond} requires $\rho = 0$.  With spot-vol
+correlation (§\ref{sec:rho-future}), conditioning on the volatility path no longer
+leaves the price shocks independent, and the control variate would have to be
+rebuilt, for instance by conditioning on the volatility's driving noise instead.

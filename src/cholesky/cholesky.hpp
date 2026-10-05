@@ -8,6 +8,7 @@
 #include "common/covariance.hpp"
 #include "common/asian_payoff.hpp"
 #include "common/rng.hpp"
+#include "common/control_variate.hpp"
 
 namespace cholesky {
 
@@ -54,6 +55,29 @@ inline CholeskyTimed price_timed(int N, int M_paths, unsigned seed = 42) {
 
 inline double price(int N, int M_paths, unsigned seed = 42) {
     return price_timed(N, M_paths, seed).price;
+}
+
+// Same sampler, priced with the conditional geometric control variate
+// (common/control_variate.hpp). Returns the CV estimate, its standard error, and the
+// plain estimate from the same paths.
+inline CVResult price_cv(int N, int M_paths, unsigned seed = 42) {
+    using namespace params;
+    using Clock = std::chrono::high_resolution_clock;
+    auto t0 = Clock::now();
+    Eigen::MatrixXd C = fbm_cholesky_factor(N, H, T);
+    auto L = C.triangularView<Eigen::Lower>();
+    double t_construct = std::chrono::duration<double>(Clock::now() - t0).count();
+
+    std::normal_distribution<double> norm(0.0, 1.0);
+    Eigen::VectorXd z(N), lv(N);
+    auto next_path = [&](std::mt19937& rng, std::vector<double>& log_vol) {
+        for (int i = 0; i < N; ++i) z(i) = norm(rng);
+        lv.noalias() = L * z;
+        for (int i = 0; i < N; ++i) log_vol[i] = nu * lv(i);
+    };
+    CVResult res = mc_control_variate(next_path, N, M_paths, seed);
+    res.t_construct = t_construct;
+    return res;
 }
 
 } // namespace cholesky

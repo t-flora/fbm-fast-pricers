@@ -61,13 +61,13 @@ echo "════════════════════════�
 # ── Step 1: Build ─────────────────────────────────────────────────────────────
 if [ "$NO_BUILD" -eq 0 ]; then
     echo ""
-    echo "── Step 1/10: cmake build ──"
+    echo "── Step 1/11: cmake build ──"
     cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev --log-level=WARNING
     cmake --build build --parallel
     echo "  done."
 else
     echo ""
-    echo "── Step 1/10: cmake build — SKIPPED (--no-build) ──"
+    echo "── Step 1/11: cmake build — SKIPPED (--no-build) ──"
 fi
 
 # ── Tests: stop before benchmarking if any sampler check fails ─────────────────
@@ -78,53 +78,60 @@ uv run pytest tests/ -q
 
 # ── Step 2: C++ benchmark ─────────────────────────────────────────────────────
 echo ""
-echo "── Step 2/10: C++ benchmark ──"
+echo "── Step 2/11: C++ benchmark ──"
 ./build/benchmark
 
 # ── Step 3: Scaling + construction breakdown + memory plots ───────────────────
 echo ""
-echo "── Step 3/10: plot_scaling.py ──"
+echo "── Step 3/11: plot_scaling.py ──"
 uv run python plots/plot_scaling.py
 
-# ── Step 4: Python memory profiling ───────────────────────────────────────────
+# ── Step 4: Extensions (variance-corrected low-rank, control variate) ─────────
+# Needs benchmarks/results/reference_price.txt from Step 2
 echo ""
-echo "── Step 4/10: profile_memory.py ──"
+echo "── Step 4/11: extensions benchmark + plot_extensions.py ──"
+./build/extensions
+uv run python plots/plot_extensions.py
+
+# ── Step 5: Python memory profiling ───────────────────────────────────────────
+echo ""
+echo "── Step 5/11: profile_memory.py ──"
 uv run python data/profile_memory.py
 
-# ── Step 5: Structural analysis ───────────────────────────────────────────────
+# ── Step 6: Structural analysis ───────────────────────────────────────────────
 echo ""
-echo "── Step 5/10: plot_structure.py (N-small=${STRUCT_SMALL}, N-large=${STRUCT_LARGE}) ──"
+echo "── Step 6/11: plot_structure.py (N-small=${STRUCT_SMALL}, N-large=${STRUCT_LARGE}) ──"
 uv run python plots/plot_structure.py --N-small "${STRUCT_SMALL}" --N-large "${STRUCT_LARGE}"
 
-# ── Step 6: MC convergence ────────────────────────────────────────────────────
+# ── Step 7: MC convergence ────────────────────────────────────────────────────
 echo ""
-echo "── Step 6/10: validate_convergence.py (seeds=${CONV_SEEDS}, max-M=${CONV_MAX_M}) ──"
+echo "── Step 7/11: validate_convergence.py (seeds=${CONV_SEEDS}, max-M=${CONV_MAX_M}) ──"
 uv run python data/validate_convergence.py --n-seeds "${CONV_SEEDS}" --max-M "${CONV_MAX_M}"
 
-# ── Step 7: Stability ─────────────────────────────────────────────────────────
+# ── Step 8: Stability ─────────────────────────────────────────────────────────
 echo ""
-echo "── Step 7/10: validate_stability.py ──"
+echo "── Step 8/11: validate_stability.py ──"
 uv run python data/validate_stability.py
 
-# ── Step 8: Lévy benchmark + roughness premium ────────────────────────────────
+# ── Step 9: Lévy benchmark + roughness premium ────────────────────────────────
 echo ""
-echo "── Step 8/10: validate_asian.py (M=${M_ASIAN}, N=${N_ASIAN}) ──"
+echo "── Step 9/11: validate_asian.py (M=${M_ASIAN}, N=${N_ASIAN}) ──"
 uv run python data/validate_asian.py --M "${M_ASIAN}" --N "${N_ASIAN}"
 
-# ── Step 9: IV smile vs SPY (requires internet) ───────────────────────────────
+# ── Step 10: IV smile vs SPY (requires internet) ───────────────────────────────
 echo ""
 if [ "$NO_IV" -eq 0 ]; then
-    echo "── Step 9/10: validate_iv.py (M=${M_IV}, N=${N_IV}) ──"
+    echo "── Step 10/11: validate_iv.py (M=${M_IV}, N=${N_IV}) ──"
     uv run python data/validate_iv.py --M "${M_IV}" --N "${N_IV}" || {
         echo "  WARNING: validate_iv.py failed (network or data issue) — continuing."
     }
 else
-    echo "── Step 9/10: validate_iv.py — SKIPPED (--no-iv) ──"
+    echo "── Step 10/11: validate_iv.py — SKIPPED (--no-iv) ──"
 fi
 
-# ── Step 10: Sensitivity heatmap + price vs strike ────────────────────────────
+# ── Step 11: Sensitivity heatmap + price vs strike ────────────────────────────
 echo ""
-echo "── Step 10/10: plot_sensitivity.py (M=${M_SENS}, N=${N_SENS}) ──"
+echo "── Step 11/11: plot_sensitivity.py (M=${M_SENS}, N=${N_SENS}) ──"
 uv run python plots/plot_sensitivity.py --M "${M_SENS}" --N "${N_SENS}"
 
 # ── Collect outputs ───────────────────────────────────────────────────────────
@@ -168,6 +175,7 @@ Parameters
   plot_structure      --N-small ${STRUCT_SMALL} --N-large ${STRUCT_LARGE}
   validate_stability  (no flags)
   profile_memory      (no flags)       → plots/memory_profile.png
+  extensions          (no flags)       → plots/variance_corrected_rank.png, control_variate.png
 
 Plots
 $(ls "${RUN_DIR}"/*.png 2>/dev/null | xargs -n1 basename | sed 's/^/  /')

@@ -126,6 +126,84 @@ static void test_exact_samplers_agree() {
           std::abs(p_chol - p_fft), tol);
 }
 
+static void test_asian_sample_matches_plain_payoff() {
+    // asian_sample() must reproduce the arithmetic payoff of the plain pricers
+    const int N = 252;
+    const double dt = 1.0 / N;
+    std::mt19937 rng(7);
+    std::normal_distribution<double> norm(0.0, 1.0);
+    double worst = 0.0;
+    for (int trial = 0; trial < 200; ++trial) {
+        std::vector<double> lv(N), Z(N);
+        double acc = 0.0;
+        for (int i = 0; i < N; ++i) { acc += 0.05 * norm(rng); lv[i] = acc; Z[i] = norm(rng); }
+        double plain = asian_call_payoff(log_vol_to_prices(lv, Z, 100.0, 0.0, dt, 0.2), 100.0);
+        double via = asian_sample(lv, Z, 100.0, 0.0, dt, 0.2, 100.0).arith;
+        worst = std::max(worst, std::abs(plain - via) / std::max(1.0, plain));
+    }
+    check(worst < 1e-12, "cv: asian_sample arithmetic payoff = plain payoff", worst, 1e-12);
+}
+
+static void test_geometric_conditional_expectation() {
+    // For one fixed volatility path, the closed-form E[(G-K)^+ | sigma] must match the
+    // Monte Carlo average of (G-K)^+ over independent price shocks
+    const int N = 64, M = 400000;
+    const double dt = 1.0 / N;
+    fft_pricer::FbmSampler sampler(N, 0.10, dt);
+    std::mt19937 rng(99);
+    std::normal_distribution<double> norm(0.0, 1.0);
+    std::vector<double> lv(N), Z(N);
+    sampler.sample(rng, norm, 0.52, lv);
+    double closed = 0.0, sum = 0.0, sum2 = 0.0;
+    for (int m = 0; m < M; ++m) {
+        for (int i = 0; i < N; ++i) Z[i] = norm(rng);
+        AsianSample a = asian_sample(lv, Z, 100.0, 0.0, dt, 0.2, 100.0);
+        closed = a.geom_mean;
+        sum += a.geom;
+        sum2 += a.geom * a.geom;
+    }
+    double mean = sum / M, se = std::sqrt((sum2 / M - mean * mean) / M);
+    double err = std::abs(mean - closed);
+    check(err < 4.0 * se, "cv: E[(G-K)^+|sigma] closed form = MC average (fixed path)", err, 4.0 * se);
+}
+
+static void test_cv_pricers_agree() {
+    const int N = 64, M = 100000;
+    CVResult a = cholesky::price_cv(N, M, /*seed=*/21);
+    CVResult b = fft_pricer::price_cv(N, M, /*seed=*/22);
+    double diff = std::abs(a.price - b.price);
+    double tol = 4.0 * std::sqrt(a.se * a.se + b.se * b.se);
+    check(diff < tol, "cv: |Cholesky - FFT| control-variate prices  (N=64, M=100k)", diff, tol);
+    double vr_a = (a.se_plain / a.se) * (a.se_plain / a.se);
+    double vr_b = (b.se_plain / b.se) * (b.se_plain / b.se);
+    check(vr_a > 10.0, "cv: variance reduction, Cholesky", vr_a, 10.0);
+    check(vr_b > 10.0, "cv: variance reduction, FFT", vr_b, 10.0);
+    double same_run = std::abs(b.price - b.price_plain);
+    double tol_same = 4.0 * b.se_plain;
+    check(same_run < tol_same, "cv: CV and plain estimates from the same paths agree", same_run, tol_same);
+}
+
+static void test_lowrank_variance_correction() {
+    const int N = 64, k = 8, M = 100000;
+    Eigen::MatrixXd C = build_fbm_cov_matrix(N, 0.10, 1.0);
+    Eigen::MatrixXd Lk = lowrank::lowrank_factor(C, k, 42);
+    Eigen::VectorXd d = lowrank::residual_sd(C, Lk);
+    Eigen::VectorXd marg = Lk.rowwise().squaredNorm() + d.cwiseAbs2();
+    double err = ((marg - C.diagonal()).cwiseAbs().array() / C.diagonal().array()).maxCoeff();
+    check(err < 1e-12, "low-rank+diag: marginal variances = diag(C)  (k=8)", err, 1e-12);
+
+    // Priced with the control variate so the comparison is precise
+    CVResult exact = fft_pricer::price_cv(N, M, /*seed=*/31);
+    CVResult corr = lowrank::price_cv(N, M, k, /*seed=*/32, /*corrected=*/true);
+    CVResult plain = lowrank::price_cv(N, M, k, /*seed=*/33, /*corrected=*/false);
+    double tol = 4.0 * std::sqrt(exact.se * exact.se + corr.se * corr.se);
+    double dc = std::abs(corr.price - exact.price);
+    check(dc < tol, "low-rank+diag: price = exact price  (k=8, N=64)", dc, tol);
+    // Negative control: the uncorrected sampler's bias must be detectable at this precision
+    double dp = std::abs(plain.price - exact.price);
+    check(dp > tol, "low-rank (uncorrected): bias detected  (k=8, N=64)", dp, tol);
+}
+
 // Runs one test; an exception (e.g. a non-PSD embedding) counts as a failure
 static void run(const char* name, void (*test)()) {
     try {
@@ -143,6 +221,10 @@ int main() {
     run("fft sampler pair independent", test_fft_sampler_pair_independent);
     run("rsvd near optimal", test_rsvd_near_optimal);
     run("exact samplers agree", test_exact_samplers_agree);
+    run("asian_sample matches plain payoff", test_asian_sample_matches_plain_payoff);
+    run("geometric conditional expectation", test_geometric_conditional_expectation);
+    run("control-variate pricers agree", test_cv_pricers_agree);
+    run("low-rank variance correction", test_lowrank_variance_correction);
     std::printf("\n%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }

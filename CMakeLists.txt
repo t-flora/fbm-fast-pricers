@@ -36,6 +36,11 @@ add_executable(benchmark benchmarks/benchmark.cpp)
 target_include_directories(benchmark PRIVATE ${FFTW3_INCLUDE_DIRS})
 target_link_libraries(benchmark PRIVATE Eigen3::Eigen ${FFTW3_LIBRARIES})
 
+# ── Extensions benchmark: variance-corrected low-rank + control variate ─────
+add_executable(extensions benchmarks/extensions.cpp)
+target_include_directories(extensions PRIVATE ${FFTW3_INCLUDE_DIRS})
+target_link_libraries(extensions PRIVATE Eigen3::Eigen ${FFTW3_LIBRARIES})
+
 # ── Tests (ctest --test-dir build) ───────────────────────────────────────────
 enable_testing()
 add_executable(test_samplers tests/test_samplers.cpp)

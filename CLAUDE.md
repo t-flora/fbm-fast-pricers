@@ -22,7 +22,11 @@ cmake --build build --parallel
 
 # Tests — run after any change to a sampler, the Python engine, or calibrate.py
 ./build/test_samplers      # or: ctest --test-dir build
-uv run pytest tests/
+uv run pytest tests/       # CI runs both on every push (.github/workflows/ci.yml)
+
+# Extensions (variance-corrected low-rank, control variate); needs reference_price.txt
+./build/extensions
+uv run python plots/plot_extensions.py
 ```
 
 ## Data & Calibration
@@ -74,34 +78,33 @@ uv run python plots/plot_scaling.py
 
 ```
 final-project/
-├── data/
-│   ├── raw/              Oxford-Man CSV downloaded here
-│   ├── calibrate.py      Estimates H and nu (Oxford-Man or --source yfinance)
-│   ├── rfsv_model.py     Vectorized numpy RFSV Monte Carlo engine (all phases)
-│   ├── validate_iv.py    Phase 1: SPY IV smile vs RFSV European calls
-│   └── validate_asian.py Phase 2: Levy benchmark + roughness premium
 ├── src/
 │   ├── common/
-│   │   ├── params.hpp        Hardcoded H, nu, K, T, S0 (update after calibration)
-│   │   ├── covariance.hpp    fBM kernel + Eigen matrix builder
-│   │   ├── asian_payoff.hpp  Payoff + log-vol → price path
-│   │   └── rng.hpp           Seeded RNG helpers
-│   ├── cholesky/
-│   │   ├── cholesky.hpp      price() in namespace cholesky::
-│   │   └── cholesky_pricer.cpp  main()
-│   ├── fft/
-│   │   ├── fft.hpp           price() in namespace fft_pricer::
-│   │   └── fft_pricer.cpp    main()
-│   └── rsvd/
-│       ├── lowrank.hpp       price() in namespace lowrank::
-│       ├── rsvd_pricer.cpp   main()
-│       └── rsvd.hpp          Halko et al. Algorithm 4.4 (subspace iteration with QR)
+│   │   ├── params.hpp           H, nu, sigma0, S0, K, T, r (kept in sync with data/params.py)
+│   │   ├── covariance.hpp       fBM kernel + Eigen matrix builder
+│   │   ├── asian_payoff.hpp     log-vol path → price path → payoff; asian_sample() for the CV
+│   │   ├── control_variate.hpp  mc_control_variate(): conditional geometric CV driver
+│   │   └── rng.hpp              Seeded RNG helpers
+│   ├── cholesky/  cholesky.hpp (fbm_cholesky_factor, price, price_timed, price_cv), cholesky_pricer.cpp
+│   ├── fft/       fft.hpp (circulant_eigenvalues, FbmSampler, price, price_timed, price_cv), fft_pricer.cpp
+│   └── rsvd/      rsvd.hpp (Halko et al. Alg. 4.4), lowrank.hpp (lowrank_factor, residual_sd,
+│                  price, price_corrected, price_freed_timed, price_cv), rsvd_pricer.cpp
 ├── benchmarks/
-│   ├── benchmark.cpp     Calls all three price() functions; exports two CSVs
-│   └── results/          time_vs_N.csv, error_vs_rank.csv, reference_price.txt
-├── plots/
-│   ├── plot_scaling.py       Two-panel time scaling + fitted exponents; error vs rank
-│   └── plot_sensitivity.py   Phase 3: H×nu ATM heatmap + price vs K curves
+│   ├── benchmark.cpp     main benchmark → results/{time_vs_N,error_vs_rank}.csv, reference_price.txt
+│   └── extensions.cpp    variance correction + CV → results/{variance_corrected_rank,control_variate}.csv
+├── data/
+│   ├── params.py         Python mirror of params.hpp (pytest checks they agree)
+│   ├── rfsv_model.py     Vectorized numpy RFSV engine (FFT sampler, CV pricer, BS/Lévy helpers)
+│   ├── calibrate.py      Variogram fit of H, nu (Oxford-Man CSV or --source yfinance)
+│   ├── validate_*.py     convergence, stability, asian (Lévy + premium), iv (live SPY)
+│   └── profile_memory.py tracemalloc profile of the numpy engine
+├── plots/                plot_scaling, plot_structure, plot_sensitivity, plot_extensions;
+│                         figures/ (generated, gitignored); *.png committed snapshots
+├── tests/                test_samplers.cpp (ctest), test_python.py (pytest)
+├── experiments/          prototypes for roadmap items (not in the pipeline)
+├── report-files/         LaTeX report: main.tex + sec1–sec8 section files
+├── .github/workflows/    ci.yml: build + both test suites on every push and PR
+├── run_pipeline.sh       build → tests → benchmarks → every analysis script, snapshotted
 └── CMakeLists.txt
 ```
 
@@ -122,6 +125,8 @@ final-project/
 **FFT sampler yields two paths per transform.** `FbmSampler::sample_pair` returns the real and imaginary parts of one inverse FFT as two independent fGn paths (Cov(Re, Im) = 0 since λ_j = λ_{2N−j}); this halves the Gaussian draws, which dominate the FFT per-path cost. Tests check both parts' covariance and their independence.
 
 **Python RNG streams.** Log-vol uses `default_rng(seed)`, price shocks `default_rng([seed, 1])` — never `seed + 1`, which collides with another run's log-vol stream. Experiments comparing configurations use common random numbers (same seeds across H, ν, K).
+
+**Extensions are opt-in, never defaults.** `lowrank::price_corrected` (adds diag(C − L_k L_kᵀ) noise; fixes the price but makes increments too rough) and `price_cv()` in all three samplers (conditional geometric control variate via `src/common/control_variate.hpp`; β from a separate 10% pilot so the estimate is exactly unbiased; needs ρ = 0). The plain `price()`/`price_timed()` paths and RNG order are untouched, so the main benchmark CSVs and the report's numbers stay valid. Extension results live in their own CSVs (`variance_corrected_rank.csv`, `control_variate.csv`) from `./build/extensions`.
 
 **FFTW plan reuse.** The FFT pricer creates the c2c forward plan (for eigenvalue computation) and the c2c backward plan (for per-path synthesis) once, then calls `fftw_execute` in the MC loop.
 
@@ -166,22 +171,25 @@ This is a final project for a fast-algorithms course. Every experiment should be
 
 ## Analysis Scripts
 
-See `TODO.md` for full task descriptions and priority ordering. Summary of new files to create:
+`TODO.md` is the prioritized roadmap for further work (evidence, plan, and done-when criteria per item). `experiments/` holds prototypes for roadmap items; they are not part of `run_pipeline.sh`. Every analysis script writes to `plots/figures/`; `run_pipeline.sh` runs all of them.
 
-| Script | Status | Purpose |
-|---|---|---|
-| `data/validate_convergence.py` | ✅ done | Price ± 1σ vs M ∈ {100..25k}, 5 seeds → `plots/figures/convergence.png` |
-| `plots/plot_structure.py` | ✅ done | fGn Toeplitz heatmap + off-diagonal SVD decay → `plots/figures/structure_analysis.png` |
-| `plots/construction_breakdown.png` | ✅ done | Stacked bar: setup vs MC time (via `price_timed()` in each .hpp) |
-| `data/validate_stability.py` | ✅ done | FFT eigenvalue positivity vs H, rSVD conditioning vs rank, Cholesky κ(C) vs N |
-| memory columns in `benchmark.cpp` | ✅ done | RSS delta + theoretical peak in `time_vs_N.csv` (no separate memory_benchmark.cpp) |
-| `data/profile_memory.py` | ✅ done | `tracemalloc` peak allocation vs (N, M) for Python engine |
+| Script | Purpose |
+|---|---|
+| `plots/plot_scaling.py` | Timing fits, per-path cost, construction breakdown, memory, error vs rank (from `benchmark` CSVs) |
+| `plots/plot_extensions.py` | Variance correction vs rank; control-variate variance reduction and time to 0.1% SE (from `extensions` CSVs) |
+| `plots/plot_structure.py` | fGn Toeplitz heatmaps; off-diagonal block vs full-matrix spectrum |
+| `plots/plot_sensitivity.py` | ATM price over H × nu and price vs K, with common random numbers |
+| `data/validate_convergence.py` | Price ± 1σ vs M over 20 seeds against a same-grid 10^6-path reference |
+| `data/validate_stability.py` | FFT eigenvalue positivity vs H, rSVD κ(L_k) vs rank, Cholesky κ(C) vs N |
+| `data/validate_asian.py` | Lévy and exact-GBM baselines; roughness premium at fixed and variance-matched nu |
+| `data/validate_iv.py` | RFSV smile vs live SPY chain (needs internet; martingale-corrected, CRN) |
+| `data/profile_memory.py` | `tracemalloc` peak allocation vs (N, M) for the numpy engine |
 
 **Production-quality run parameters** (use for final report plots):
-- `validate_asian.py`: `--M 10000 --N 252`, 5 seeds, mean ± std error bars
+- `validate_asian.py`: `--M 10000 --N 252 --n-seeds 10` (common random numbers; paired SEs on the premium)
 - `validate_iv.py`: `--M 20000 --N 63` (runs in seconds; uses common random numbers + martingale correction of S_T — without it, forward sampling error tilts the IV curve into a fake skew)
 - `plot_sensitivity.py`: `--M 10000 --N 252` (absolute SE ≈ 0.1; cell differences precise via common random numbers)
-- `validate_convergence.py`: M up to 25000
+- `validate_convergence.py`: `--n-seeds 20 --max-M 25000`
 
 ## Documentation Formatting
 
@@ -251,7 +259,7 @@ Figures live in `plots/figures/` (gitignored); `main.tex` uses `\graphicspath{{.
 If figures are missing, copy from `plots/*.png`: `cp plots/*.png plots/figures/`.
 The `.bbl` file is generated once by `bibtex main`; after that, single `pdflatex` passes suffice.
 
-**Section files:** `sec1-intro.tex` through `sec7-futurework.tex` in `report-files/`.
+**Section files:** `sec1-intro.tex` through `sec8-futurework.tex` in `report-files/` (`sec7-extensions.tex` covers the variance correction and control variate).
 Track drafting status and all post-draft corrections in `report-plan.md` (gitignored).
 
 ## Commit Convention
