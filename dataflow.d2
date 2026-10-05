@@ -20,19 +20,19 @@ free proxy via 5-day squared returns
 
 calibrate: |md
 ## `calibrate.py`
-Fit log(RV) ~ H·log(lag)
-→ H ≈ 0.10, ν ≈ 0.30
+Variogram fit of log-vol
+slope → H, intercept → ν (time in years)
 | {shape: rectangle}
 
 params: |md
-## `params.hpp`
-H, ν, S₀, K, T, r
-(constexpr; no runtime I/O)
+## `params.hpp` + `params.py`
+H = 0.10, ν = 0.52, σ₀ = 0.2, S₀, K, T, r
+(kept in sync by a test)
 | {shape: document}
 
 oxford   -> calibrate
 yfinance -> calibrate: "alt."
-calibrate -> params: "paste values\n& rebuild"
+calibrate -> params: "compare with\nliterature values"
 
 # ── Layer 3a: C++ engine ──────────────────────────────────────────────────────
 
@@ -77,16 +77,18 @@ py: |md
 ## `rfsv_model.py`
 NumPy circulant-FFT engine
 (matches C++ FFTW convention)
++ control-variate pricer
 | {shape: rectangle}
 
-params -> py: "H, ν (imported)"
+params -> py: "H, ν, σ₀ (imported)"
 
 # ── Layer 4: Benchmark runner ─────────────────────────────────────────────────
 
 bench: |md
 ## `benchmark.cpp`
 Runs all three `price_timed()`
-across N ∈ {252, 500, 1000}, M = 10 000 paths
+N from 64 to 4000, M = 10 000 paths,
+median of 3 timings
 | {shape: rectangle}
 
 cpp.alg1 -> bench
@@ -101,18 +103,18 @@ csvs: benchmarks/results/ {
   t: |md
 ## `time_vs_N.csv`
 wall time, construction + MC split
-peak RSS, bandwidth estimate
+measured peak memory, streaming rate
 |
 
   e: |md
 ## `error_vs_rank.csv`
 Frobenius ‖C−Cₖ‖_F/‖C‖_F
-price error vs p_ref
+price error vs p_ref (100k paths/rank)
 |
 
   r: |md
 ## `reference_price.txt`
-p_ref = 23.58
+p_ref = 5.314
 avg of 500k-path Chol + 500k-path FFT
 |
 }
@@ -120,6 +122,46 @@ avg of 500k-path Chol + 500k-path FFT
 bench -> csvs.t
 bench -> csvs.e
 bench -> csvs.r
+
+# ── Extensions: variance correction + control variate ────────────────────────
+
+ext: |md
+## `extensions.cpp`
+variance-corrected low-rank vs rank;
+control variate per sampler
+(variance reduction, time to 0.1% SE)
+| {shape: rectangle}
+
+cpp.alg1 -> ext
+cpp.alg2 -> ext
+cpp.alg3 -> ext
+csvs.r -> ext: "reference"
+
+extcsv: |md
+## `variance_corrected_rank.csv`
+## `control_variate.csv`
+| {shape: cylinder}
+
+ext -> extcsv
+
+plotext: |md
+## `plot_extensions.py`
+→ variance_corrected_rank.png
+→ control_variate.png
+| {shape: rectangle}
+
+extcsv -> plotext
+
+# ── Tests & CI ────────────────────────────────────────────────────────────────
+
+tests: |md
+## `tests/` + CI
+test_samplers.cpp (ctest), test_python.py (pytest)
+run on every push (Ubuntu + macOS)
+| {shape: rectangle}
+
+cpp -> tests
+py -> tests
 
 # ── Layer 6: Analysis & plots ─────────────────────────────────────────────────
 

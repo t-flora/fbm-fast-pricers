@@ -451,6 +451,53 @@ price analytically — no closed-form exists under stochastic volatility.
 
 ---
 
+## Extensions: Variance Correction and a Control Variate
+
+Both are opt-in: `price()` and `price_timed()` are unchanged. Results and discussion are in the README's Extensions section and Section 7 of the report.
+
+### Variance-corrected low-rank sampler (`lowrank.hpp`)
+
+The rank-$k$ factor drops the variance held by small eigenvalues, so the paths are too calm and the price too low. `residual_sd()` computes how much variance each time step is missing:
+
+```cpp
+inline Eigen::VectorXd residual_sd(const Eigen::MatrixXd& C, const Eigen::MatrixXd& Lk) {
+    return (C.diagonal() - Lk.rowwise().squaredNorm()).cwiseMax(0.0).cwiseSqrt();
+}
+```
+
+`Lk.rowwise().squaredNorm()` is the diagonal of $L_k L_k^\top$ without forming the $N \times N$ product. Inside the MC loop, independent noise with that standard deviation is added to each step:
+
+```cpp
+Eigen::VectorXd lv = nu * (Lk * z);  // O(N*k)
+if (resid)
+    for (int i = 0; i < N; ++i) lv(i) += nu * (*resid)(i) * norm(rng);
+```
+
+Every marginal variance is now exact, which removes the price bias. The off-diagonal covariances are still those of $C_k$. That is why the increments come out too rough: the noise is independent from step to step, while true fGn increments are correlated.
+
+### Conditional geometric control variate (`asian_payoff.hpp`, `control_variate.hpp`)
+
+`asian_sample()` walks the path once and returns three numbers: the arithmetic payoff $V$, the geometric payoff $Y = (G - K)^+$, and $\mathbb{E}[Y \mid \sigma]$. The last one needs only two running sums, because given the volatility path $\log G$ is Gaussian:
+
+```cpp
+double w = static_cast<double>(N - i) / N;   // share of the averaging window step i affects
+m += w * drift;                              // mean of log G
+v += w * w * sigma * sigma * dt;             // variance of log G
+...
+double geom_mean = std::exp(m + 0.5 * v) * norm_cdf(d1) - K * norm_cdf(d1 - sd);
+```
+
+This is the Black–Scholes formula for a lognormal variable with log-mean $m$ and log-variance $v$. It needs $\rho = 0$: the shocks $Z$ must be independent of $\sigma$ for $\log G$ to stay Gaussian once $\sigma$ is fixed.
+
+`mc_control_variate()` takes any path generator (a lambda that fills one fBM path) and runs it twice:
+
+1. **Pilot run** (10% of the paths, its own seed): estimate $\beta = \text{Cov}(V, C) / \text{Var}(C)$ with $C = Y - \mathbb{E}[Y \mid \sigma]$.
+2. **Main run**: accumulate running sums of $V$, $C$, $V^2$, $C^2$, $VC$. From those it reports the control-variate estimate $\overline{V - \beta C}$, its standard error, and the plain estimate $\overline{V}$ from the same paths.
+
+Using a separate pilot keeps the estimate exactly unbiased: $\beta$ does not depend on the paths it is applied to, and $C$ has mean zero. Each sampler's `price_cv()` just builds its sampler and passes a path lambda. The FFT version hands out the two paths of each transform one at a time, keeping the spare in a buffer. The pilot size is always even, so no half-used pair leaks from the pilot into the main run.
+
+---
+
 ## Comparison Summary
 
 | | Cholesky | FFT | Low-Rank rSVD ($k=32$) |
