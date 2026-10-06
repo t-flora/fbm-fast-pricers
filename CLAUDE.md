@@ -22,7 +22,7 @@ cmake --build build --parallel
 
 # Tests — run after any change to a sampler, the Python engine, or calibrate.py
 ./build/test_samplers      # or: ctest --test-dir build
-uv run pytest tests/       # CI runs both on every push (.github/workflows/ci.yml)
+uv run pytest tests/       # CI runs both on pushes to main and on PRs (.github/workflows/)
 
 # Extensions (variance-corrected low-rank, control variate); needs reference_price.txt
 ./build/extensions
@@ -103,7 +103,8 @@ final-project/
 ├── tests/                test_samplers.cpp (ctest), test_python.py (pytest)
 ├── experiments/          prototypes for roadmap items (not in the pipeline)
 ├── report-files/         LaTeX report: main.tex + sec1–sec8 section files
-├── .github/workflows/    ci.yml: build + both test suites on every push and PR
+├── .github/workflows/    ci.yml (Ubuntu, gating) + ci-macos.yml (macOS, informational):
+│                         build + both test suites on pushes to main and on PRs
 ├── run_pipeline.sh       build → tests → benchmarks → every analysis script, snapshotted
 └── CMakeLists.txt
 ```
