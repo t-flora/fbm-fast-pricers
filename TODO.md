@@ -10,7 +10,7 @@ A prioritized roadmap written after the October 2026 review (merged in `0f0744d`
 |---|---|---|---|
 | 1 | ~~Variance-corrected low-rank sampler~~ | **Done:** bias within one SE at every rank | S |
 | 2 | ~~Conditional geometric control variate~~ | **Done:** variance reduction 26–29 for every sampler | S–M |
-| 3 | ~~Continuous integration~~ | **Done:** Ubuntu + macOS on every push | S |
+| 3 | ~~Continuous integration~~ | **Done:** Ubuntu (gating) + macOS (informational) | S |
 | 4 | Batched sampling (GEMM, batched FFT, GPU) | Cholesky is bandwidth-bound at large $N$; a matrix-matrix product is not | S–M |
 | 5 | Faster Gaussian generator | Random numbers dominate the FFT and rSVD per-path cost | S |
 | 6 | Multithreading | Paths are independent; thread scaling also shows which methods are bandwidth-bound | M |
@@ -130,4 +130,4 @@ The reduction is set by $\text{corr}(V, C) = 0.981$, not by the raw payoff corre
 
 ### 3. Continuous integration
 
-`.github/workflows/ci.yml` builds the C++ code and runs `ctest` and `pytest` on every push and pull request, on Ubuntu (GCC, apt packages) and macOS (Apple Clang, Homebrew). The full benchmark and the live-data IV script are not run in CI.
+`.github/workflows/ci.yml` builds the C++ code and runs `ctest` and `pytest` on Ubuntu (GCC, apt packages); it is the gating check and the README badge. `.github/workflows/ci-macos.yml` does the same on macOS (Apple Clang, Homebrew) as an informational check, because GitHub's macOS runners are capacity-constrained: the first post-merge run on `main` was cancelled after 15 minutes without ever getting a runner, and its re-run waited several hours. Both run on pushes to `main` and on pull requests, so a PR commit is tested once rather than twice. The full benchmark and the live-data IV script are not run in CI.

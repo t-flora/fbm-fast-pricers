@@ -1,5 +1,15 @@
 # Changelog
 
+## CI hardening, October 2026 (branch `ci/macos-informational`)
+
+The first CI run on `main` after merging PR #2 showed a red X: the macOS job was cancelled after 15 minutes because GitHub never assigned it a runner ("not acquired by Runner", with a capacity notice for macOS arm64). No step ran, the Ubuntu job passed, and a re-run passed after several hours in the queue.
+
+- **Split CI into two workflows.** `ci.yml` (Ubuntu, GCC) is the gating check and the README badge. `ci-macos.yml` (macOS, Apple Clang) is informational: a separate workflow with `continue-on-error`, so a runner shortage or a macOS-only failure never turns the main CI status red. A failing macOS job is still visible.
+- **No more duplicate runs.** Both workflows run on pushes to `main` and on pull requests. Previously every commit on a PR branch ran CI twice (once for the push, once for the PR), which also doubled the load on the scarce macOS runners.
+- **`timeout-minutes: 20`** on both jobs (a normal run takes 1–2 minutes).
+- README, CLAUDE.md, TODO.md, the dataflow diagram and the report's testing section updated to match.
+
+
 ## Extensions and CI, October 2026 (branch `feat/variance-correction-and-cv`)
 
 Implements items 1–3 of the roadmap in `TODO.md` as *additional* methods. The existing pricers, the main benchmark CSVs, and the report's numbers are unchanged; the new methods are opt-in and measured by a separate program.

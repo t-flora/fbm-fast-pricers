@@ -1,31 +1,25 @@
-# Builds the C++ code and runs both test suites on every push and pull request.
-# Ubuntu covers GCC + system packages; macOS covers Apple Clang + Homebrew, the
-# development setup. The full benchmark (~8 min) and live-data scripts are not run.
+# Gating CI: builds the C++ code and runs both test suites on Ubuntu (GCC, system
+# packages). Runs on pushes to main and on pull requests, so a commit on a PR branch is
+# tested once (as part of the PR), not twice. macOS runs in a separate, non-gating
+# workflow (ci-macos.yml). The full benchmark (~8 min) and live-data scripts are not run.
 name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
   test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    name: ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install C++ dependencies (Ubuntu)
-        if: runner.os == 'Linux'
+      - name: Install C++ dependencies
         run: sudo apt-get update && sudo apt-get install -y libeigen3-dev libfftw3-dev pkg-config
-
-      - name: Install C++ dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew install eigen fftw pkg-config
 
       - name: Build
         run: |
