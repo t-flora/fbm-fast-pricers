@@ -9,7 +9,11 @@
 //   - rSVD: error within a few percent of the optimal (Eckart-Young) truncation,
 //     including k close to N
 //   - Prices: the two exact samplers agree within Monte Carlo error
+//   - Batched pricers: fast generator matches N(0,1) and its reference stream; batched
+//     paths have covariance C; price independent of thread count; fixed-seed regression
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <random>
@@ -204,6 +208,145 @@ static void test_lowrank_variance_correction() {
     check(dp > tol, "low-rank (uncorrected): bias detected  (k=8, N=64)", dp, tol);
 }
 
+// ── Batched pricers and the fast generator (common/batched_mc.hpp, fast_rng.hpp) ──
+
+static void test_xoshiro_reference_outputs() {
+    // From state {1, 2, 3, 4}: the first two outputs follow by hand from the reference
+    // algorithm (5 * 2^23 + 1, then 7 * 2^23 + 96 + 7); the rest pin the sequence
+    fastrng::Xoshiro256pp g(1, 2, 3, 4);
+    const uint64_t expect[4] = { 41943041ULL, 58720359ULL, 3588806011781223ULL, 3591011842654386ULL };
+    int bad = 0;
+    for (uint64_t e : expect) bad += g() != e;
+    check(bad == 0, "fast rng: xoshiro256++ reference outputs", bad, 0);
+}
+
+static void test_ziggurat_distribution() {
+    // 10^7 draws: moments and the CDF at -3..3 within 4 standard errors, and the mass
+    // beyond the base strip R (drawn by the separate tail sampler)
+    const int n = 10000000;
+    fastrng::FastNormal z(2024, 0);
+    double s1 = 0, s2 = 0, s4 = 0;
+    long below[7] = {0}, tail = 0;
+    for (int j = 0; j < n; ++j) {
+        double x = z();
+        s1 += x; s2 += x * x; s4 += x * x * x * x;
+        for (int c = 0; c < 7; ++c) below[c] += x < c - 3;
+        tail += std::abs(x) > fastrng::Ziggurat::R;
+    }
+    double worst = 0.0;  // largest deviation in standard errors
+    worst = std::max(worst, std::abs(s1 / n) / std::sqrt(1.0 / n));
+    worst = std::max(worst, std::abs(s2 / n - 1.0) / std::sqrt(2.0 / n));
+    worst = std::max(worst, std::abs(s4 / n - 3.0) / std::sqrt(96.0 / n));
+    for (int c = 0; c < 7; ++c) {
+        double p = 0.5 * std::erfc(-(c - 3) / std::sqrt(2.0));
+        if (p > 0 && p < 1) worst = std::max(worst, std::abs(double(below[c]) / n - p) / std::sqrt(p * (1 - p) / n));
+    }
+    double p_tail = std::erfc(fastrng::Ziggurat::R / std::sqrt(2.0));
+    worst = std::max(worst, std::abs(double(tail) / n - p_tail) / std::sqrt(p_tail / n));
+    check(worst < 4.0, "fast rng: ziggurat moments, CDF and tail (n=1e7, in SEs)", worst, 4.0);
+}
+
+static void test_batched_payoff_matches_plain() {
+    const int N = 252;
+    const double dt = 1.0 / N;
+    std::mt19937 rng(17);
+    std::normal_distribution<double> norm(0.0, 1.0);
+    double worst = 0.0;
+    for (int trial = 0; trial < 200; ++trial) {
+        std::vector<double> lv(N), Z(N);
+        double acc = 0.0;
+        for (int j = 0; j < N; ++j) { acc += 0.05 * norm(rng); lv[j] = acc; Z[j] = norm(rng); }
+        double plain = asian_call_payoff(log_vol_to_prices(lv, Z, 100.0, 0.0, dt, 0.2), 100.0);
+        double fast = batched::asian_payoff(lv.data(), Z.data(), N, 100.0, 0.0, dt, 0.2, 100.0);
+        worst = std::max(worst, std::abs(plain - fast));
+    }
+    check(worst == 0.0, "batched: allocation-free payoff = plain payoff (bitwise)", worst, 0.0);
+}
+
+// Sample covariance of nu * W^H paths from a batched worker, divided by nu^2, against C.
+// Blocks of 63 paths exercise the partial last pair of the FFT worker.
+template <class Worker>
+static double batched_cov_error(Worker& worker, int N, int M, const Eigen::MatrixXd& C) {
+    const int B = 63;
+    Eigen::MatrixXd LV(N, B), S = Eigen::MatrixXd::Zero(N, N);
+    int done = 0;
+    for (uint32_t b = 0; done < M; ++b) {
+        const int n = std::min(B, M - done);
+        fastrng::FastNormal src(5, b);
+        worker.log_vol(src, n, LV);
+        S.noalias() += LV.leftCols(n) * LV.leftCols(n).transpose();
+        done += n;
+    }
+    S /= M * params::nu * params::nu;
+    return (S - C).cwiseAbs().maxCoeff();
+}
+
+static void test_batched_sampler_covariance() {
+    const int N = 16, M = 200000;
+    Eigen::MatrixXd C = build_fbm_cov_matrix(N, params::H, params::T);
+    double tol = 6.0 * std::sqrt(2.0 / M) * C.cwiseAbs().maxCoeff();
+
+    Eigen::MatrixXd F = cholesky::fbm_cholesky_factor(N, params::H, params::T);
+    cholesky::BatchWorker wc(F, 63);
+    double ec = batched_cov_error(wc, N, M, C);
+    check(ec < tol, "batched cholesky: max|sample cov - C|  (N=16, M=200k)", ec, tol);
+
+    std::vector<double> scale = fft_pricer::circulant_scale(N, params::H, params::T / N);
+    fft_pricer::BatchWorker wf(scale, 63);
+    double ef = batched_cov_error(wf, N, M, C);
+    check(ef < tol, "batched fft: max|sample cov - C|  (N=16, M=200k, odd blocks)", ef, tol);
+
+    // Low-rank at full rank reproduces C itself
+    Eigen::MatrixXd Lk = lowrank::lowrank_factor(C, N, 42);
+    lowrank::BatchWorker wl(Lk, 63);
+    double el = batched_cov_error(wl, N, M, C);
+    check(el < tol, "batched low-rank (k=N): max|sample cov - C|  (N=16, M=200k)", el, tol);
+}
+
+static void test_batched_thread_invariance() {
+    // Blocks own their streams and are reduced in order: any thread count, same price
+    const int N = 128, M = 5000;
+    batched::Config one{64, 1, batched::Rng::Fast}, four{64, 4, batched::Rng::Fast};
+    int bad = 0;
+    bad += cholesky::price_batched(N, M, one).price != cholesky::price_batched(N, M, four).price;
+    bad += fft_pricer::price_batched(N, M, one).price != fft_pricer::price_batched(N, M, four).price;
+    bad += lowrank::price_batched(N, M, 16, one).price != lowrank::price_batched(N, M, 16, four).price;
+    batched::Config one_std{1, 1, batched::Rng::Std}, three_std{1, 3, batched::Rng::Std};
+    bad += cholesky::price_batched(N, 999, one_std).price != cholesky::price_batched(N, 999, three_std).price;
+    check(bad == 0, "batched: price bitwise identical for 1 and several threads", bad, 0);
+}
+
+static void test_batched_prices_agree() {
+    // Batched exact samplers (both generators) against the plain pricer, N=64
+    const int N = 64, M = 200000;
+    double ref = cholesky::price(N, M, /*seed=*/41);
+    double tol = 4.0 * std::sqrt(2.0) * 12.0 / std::sqrt(M);  // payoff std < 12, as above
+    double worst = 0.0;
+    for (auto rng : {batched::Rng::Std, batched::Rng::Fast}) {
+        batched::Config cfg{64, 2, rng};
+        worst = std::max(worst, std::abs(cholesky::price_batched(N, M, cfg, 42).price - ref));
+        worst = std::max(worst, std::abs(fft_pricer::price_batched(N, M, cfg, 43).price - ref));
+    }
+    check(worst < tol, "batched: Cholesky/FFT prices (std + fast rng) = plain price", worst, tol);
+
+    // The batched low-rank sampler has the same truncation bias as the plain one
+    double lr_plain = lowrank::price(N, M, 8, /*seed=*/44);
+    double lr_batched = lowrank::price_batched(N, M, 8, {64, 2, batched::Rng::Fast}, 45).price;
+    check(std::abs(lr_plain - lr_batched) < tol, "batched: low-rank price (k=8) = plain low-rank price",
+          std::abs(lr_plain - lr_batched), tol);
+}
+
+static void test_batched_fixed_seed_regression() {
+    // Pins the fast-generator stream end to end (generator, ziggurat tables, block seeding,
+    // FFT and Cholesky workers). Tolerance allows last-bit libm/FFTW differences across
+    // platforms; any change to the stream moves the price by ~1e-2.
+    batched::Config cfg{64, 1, batched::Rng::Fast};
+    double f = fft_pricer::price_batched(64, 10000, cfg, 42).price;
+    double c = cholesky::price_batched(64, 10000, cfg, 42).price;
+    double err = std::max(std::abs(f - 5.4529229435598605), std::abs(c - 5.3844322364811728));
+    check(err < 1e-9, "batched: fixed-seed prices unchanged (FFT, Cholesky; N=64)", err, 1e-9);
+}
+
 // Runs one test; an exception (e.g. a non-PSD embedding) counts as a failure
 static void run(const char* name, void (*test)()) {
     try {
@@ -225,6 +368,13 @@ int main() {
     run("geometric conditional expectation", test_geometric_conditional_expectation);
     run("control-variate pricers agree", test_cv_pricers_agree);
     run("low-rank variance correction", test_lowrank_variance_correction);
+    run("xoshiro reference outputs", test_xoshiro_reference_outputs);
+    run("ziggurat distribution", test_ziggurat_distribution);
+    run("batched payoff matches plain", test_batched_payoff_matches_plain);
+    run("batched sampler covariance", test_batched_sampler_covariance);
+    run("batched thread invariance", test_batched_thread_invariance);
+    run("batched prices agree", test_batched_prices_agree);
+    run("batched fixed-seed regression", test_batched_fixed_seed_regression);
     std::printf("\n%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }
