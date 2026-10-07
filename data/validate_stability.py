@@ -94,16 +94,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
 from data.params import H as H_DEFAULT, NU as NU_DEFAULT, T  # noqa: E402
+# fbm_cov_matrix and rsvd live in the engine (shared with the low-rank sampler);
+# re-exported here for the tests and experiments that use them as stab.*
+from data.rfsv_model import fbm_cov_matrix, rsvd  # noqa: E402,F401
 
 
 # ── Covariance helpers ────────────────────────────────────────────────────────
-
-def fbm_cov_matrix(N: int, H: float, T: float = 1.0) -> np.ndarray:
-    dt = T / N
-    t  = np.arange(1, N + 1) * dt
-    ti, tj = t[:, None], t[None, :]
-    return 0.5 * (ti ** (2 * H) + tj ** (2 * H) - np.abs(ti - tj) ** (2 * H))
-
 
 def fgn_cov_row(N: int, H: float, dt: float) -> np.ndarray:
     """First row of the Toeplitz fGn covariance matrix."""
@@ -132,39 +128,6 @@ def circulant_eigenvalues(N: int, H: float, dt: float) -> np.ndarray:
     # FFT gives complex output; imaginary parts should be ~0 (real symmetric input)
     lam = np.fft.fft(c).real
     return lam
-
-
-def rsvd(A: np.ndarray, k: int, p: int = 5, q: int = 2,
-         seed: int = 42) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Halko-Martinsson-Tropp Algorithm 4.4 (randomized subspace iteration).
-
-    Returns U (m x k), S (k,) such that A ≈ U * diag(S) * U^T for symmetric A.
-    The third return value is None (Vt not needed here; symmetric => Vt = U^T).
-
-    How it works:
-      Stage A: random sketch Y = A @ Omega captures the k dominant column directions.
-      Power iterations Y = (A A^T)^q @ Y amplify the signal-to-noise ratio by
-      raising singular values to the power 2q+1, separating large from small.
-      Re-orthonormalizing after every product keeps the small directions from
-      being lost to round-off (sigma_1/sigma_k raised to 2q+1 can reach 1e15).
-      Q is an orthonormal basis for the range of (A A^T)^q A.
-      Stage B: project A onto Q to get a small (k+p) x n matrix B.
-      SVD of B is cheap (O((k+p)^2 * n)); rotate back via Q to get U.
-    """
-    rng      = np.random.default_rng(seed)
-    _m, n  = A.shape
-    l     = k + p  # oversampled rank (p=5 reduces failure probability to near zero)
-    Omega = rng.standard_normal((n, l))
-    Q, _  = np.linalg.qr(A @ Omega)  # sketch: N x l  (captures top-l column directions)
-    for _ in range(q):
-        # Power iteration with QR after each product: range of (A A^T)^q A
-        W, _ = np.linalg.qr(A.T @ Q)
-        Q, _ = np.linalg.qr(A @ W)
-    B    = Q.T @ A            # project: cheap (k+p) x n matrix
-    U_b, S, _ = np.linalg.svd(B, full_matrices=False)
-    U    = Q @ U_b            # rotate U back into the original N-dimensional space
-    return U[:, :k], S[:k], None
 
 
 # ── Panel (a): FFT circulant eigenvalues ─────────────────────────────────────
