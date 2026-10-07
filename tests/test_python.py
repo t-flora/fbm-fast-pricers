@@ -10,6 +10,9 @@ Each test targets a property that a past bug broke or would break:
   - at nu = 0 the European pricer reproduces Black-Scholes
   - the variogram calibration recovers known (H, nu), with time in years
   - the Python rSVD is close to the optimal truncation
+  - the Oxford-Man loader filters one symbol, keeps local dates, drops bad rows
+  - the variance-corrected low-rank sampler restores marginal variances and the price
+  - the pathwise vega matches per-path and central finite differences
 """
 
 import os
@@ -21,6 +24,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data"))
 
 import calibrate  # noqa: E402
+import greeks  # noqa: E402
 import params  # noqa: E402
 import validate_stability as stab  # noqa: E402
 from rfsv_model import (  # noqa: E402
@@ -225,3 +229,28 @@ def test_oxford_man_loader_single_index_file(tmp_path):
                     "2000-01-03 00:00:00-05:00,1e-4,1e-4\n")
     rv = calibrate.load_oxford_man(str(path), symbol=".IGNORED")
     np.testing.assert_allclose(rv.values, [1e-4, 2e-4])
+
+
+def test_pathwise_derivatives_match_per_path_finite_differences():
+    # Same paths and shocks: away from the kinks A = K and G = K, the per-path pathwise
+    # derivatives of V and of the control C = Y - E[Y|sigma] equal their finite differences
+    N, M, nu, h, dt = 32, 2_000, params.NU, 1e-6, 1.0 / 32
+    X = simulate_log_vol_paths(N, M, params.H, 1.0, dt, seed=12)
+    dV, dC = greeks.pathwise_vega_terms(X, nu, params.MU0, 100.0, 0.0, dt, 100.0, seed=12)
+    up = asian_cv_terms(params.MU0 + (nu + h) * X, 100.0, 0.0, dt, 100.0, seed=12)
+    dn = asian_cv_terms(params.MU0 + (nu - h) * X, 100.0, 0.0, dt, 100.0, seed=12)
+    fd_V = (up[0] - dn[0]) / (2 * h)
+    fd_C = ((up[1] - up[2]) - (dn[1] - dn[2])) / (2 * h)
+    for pw, fd in [(dV, fd_V), (dC, fd_C)]:
+        ok = np.abs(pw - fd) < 1e-5 * (1 + np.abs(fd))
+        assert ok.mean() > 0.99
+
+
+def test_pathwise_vega_agrees_with_central_fd():
+    N, M = 32, 20_000
+    pw = greeks.pathwise_vega(N, M, seed=5)
+    fd = greeks.fd_greek("nu", 0.01, N, M, seed=5)
+    for name in ("plain", "cv"):
+        assert abs(pw[name][0] - fd[name][0]) < 4 * np.hypot(pw[name][1], fd[name][1]), name
+    # The differentiated control variate reduces the pathwise variance
+    assert pw["cv"][1] < pw["plain"][1]
