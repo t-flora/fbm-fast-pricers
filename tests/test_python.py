@@ -27,10 +27,14 @@ from rfsv_model import (  # noqa: E402
     asian_cv_terms,
     bs_call_price,
     build_fgn_eigenvalues,
+    lowrank_factor,
+    lowrank_sampler,
     price_asian_call,
     price_asian_call_cv,
     price_european_call,
+    residual_sd,
     simulate_log_vol_paths,
+    simulate_log_vol_paths_lowrank,
 )
 
 
@@ -115,6 +119,52 @@ def test_control_variate_is_unbiased_and_effective():
     # Independent runs agree within the (much smaller) CV error
     other = price_asian_call_cv(seed=4, **kw)
     assert abs(res["price"] - other["price"]) < 4 * np.hypot(res["se"], other["se"])
+
+
+def test_control_variate_vector_strikes_match_scalar():
+    # An array of strikes is priced from the same paths as the scalar calls
+    kw = dict(H=params.H, nu=params.NU, N=32, M=5_000, seed=6)
+    Ks = np.array([90.0, 100.0, 110.0])
+    vec = price_asian_call_cv(K=Ks, **kw)
+    for j, K in enumerate(Ks):
+        one = price_asian_call_cv(K=K, **kw)
+        for key in ("price", "se", "price_plain", "se_plain", "beta"):
+            assert vec[key][j] == pytest.approx(one[key], rel=1e-10), key
+
+
+def test_lowrank_corrected_marginal_variances():
+    N, k, H, nu = 64, 8, params.H, params.NU
+    C = stab.fbm_cov_matrix(N, H)
+    Lk = lowrank_factor(C, k)
+    d = residual_sd(C, Lk)
+    # Exact from the factor: diag(L_k L_k^T) + d^2 = diag(C)
+    marg = (Lk ** 2).sum(axis=1) + d ** 2
+    assert np.abs(marg / np.diag(C) - 1).max() < 1e-12
+    # Sampled: diag of the sample covariance matches nu^2 diag(C) within MC error,
+    # while the plain rank-k paths visibly miss variance
+    M = 100_000
+    tol = 6 * np.sqrt(2 / M)                    # ~6 SE of a relative variance estimate
+    corr = simulate_log_vol_paths_lowrank(N, M, H, nu, 1.0 / N, k, seed=11, corrected=True)
+    plain = simulate_log_vol_paths_lowrank(N, M, H, nu, 1.0 / N, k, seed=11)
+    target = nu ** 2 * np.diag(C)
+    assert np.abs((corr ** 2).mean(axis=0) / target - 1).max() < tol
+    assert ((plain ** 2).mean(axis=0) / target).min() < 1 - 5 * tol
+    # The correction draws come after z, so it leaves the rank-k part unchanged
+    resid = (corr - plain) / nu
+    assert np.abs(resid.std(axis=0) / np.maximum(d, 1e-300) - 1).max() < tol
+
+
+def test_lowrank_variance_correction_fixes_price():
+    # Mirrors test_lowrank_variance_correction in tests/test_samplers.cpp
+    N, k, M, H, nu = 64, 8, 100_000, params.H, params.NU
+    kw = dict(H=H, nu=nu, K=100.0, N=N, M=M)
+    exact = price_asian_call_cv(seed=31, **kw)
+    corr = price_asian_call_cv(seed=32, sampler=lowrank_sampler(N, H, nu, 1.0 / N, k, True), **kw)
+    plain = price_asian_call_cv(seed=33, sampler=lowrank_sampler(N, H, nu, 1.0 / N, k), **kw)
+    tol = 4 * np.hypot(exact["se"], corr["se"])
+    assert abs(corr["price"] - exact["price"]) < tol
+    # Negative control: the uncorrected sampler's bias is detectable at this precision
+    assert abs(plain["price"] - exact["price"]) > tol
 
 
 # Long format of the published Oxford-Man file: unnamed date column with the exchange's
