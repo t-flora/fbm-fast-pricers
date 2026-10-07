@@ -71,7 +71,7 @@ The control variate and the standard errors:
   price_asian_call_cv subtracts beta (Y - E[Y | sigma]), with Y the geometric-average
   payoff and E[Y | sigma] its closed form given the vol path; beta comes from a
   separate pilot run, so every cell is exactly unbiased.  It cancels the price-shock
-  noise and cuts the variance about 25x at the money (printed at the end), so the
+  noise and cuts the variance 26-56x at nu = 0.52 (printed at the end), so the
   absolute SE of a cell at M = 10,000 is ~0.02 instead of ~0.1.  Cell-to-cell
   differences are more precise still, because all cells share their random numbers.
   The variance reduction shrinks as nu grows, since the control does not touch the
@@ -187,7 +187,7 @@ def plot_surface(H_grid, nu_grid, price_grid, se_grid, out_path, M):
     ax2.set_title("Price vs roughness H\n(for each vol-of-vol nu)")
     ax2.legend(fontsize=9, title=r"$\nu$")
 
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")  # keep the fig.text header (y > 1)
     print(f"  Saved: {out_path}")
     plt.close()
 

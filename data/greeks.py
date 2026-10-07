@@ -73,6 +73,12 @@ Contested points:
   - The finite difference at large h is biased (curvature of V in nu); at
     small h it is unbiased to O(h^2) and, with CRN, no noisier.  Agreement
     between FD at small h and pathwise is the check that both are right.
+  - Every bump size reuses the same paths, so the FD error bars are almost
+    perfectly correlated across h: a drift of the points with h is the O(h^2)
+    bias, measured far more precisely than the error bars suggest.
+  - The plain pathwise and plain FD estimates use the same paths as each other
+    (and agree to ~1e-3), but they are noisier than the CV versions; their gap to
+    the CV estimates is within the plain SE.
 """
 
 import argparse
@@ -202,7 +208,6 @@ def plot_greeks(nu_fd, pw, h_fd, M, N, out_path):
     se = np.array([h_fd[h]["cv"][1] for h in H_BUMPS])
     ax2.errorbar(hs, est, yerr=se, fmt="o-", color="C3", capsize=4, ms=6, lw=1.5,
                  label=r"central FD + CV, $\pm 1$ SE")
-    ax2.axhline(0, color="black", lw=0.8)
     ax2.set_xscale("log")
     ax2.set_xlabel(r"bump size $h$ in $H$")
     ax2.set_ylabel(r"$\partial V / \partial H$")
