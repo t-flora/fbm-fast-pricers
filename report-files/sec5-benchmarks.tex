@@ -260,8 +260,8 @@ so $\kappa \cdot \epsilon \approx 2 \times 10^{-15}$) and does not cause numeric
 issues in path generation.
 
 \paragraph{(c) Cholesky covariance conditioning: }
-Figure~\ref{fig:stability}(c) shows $\kappa(C) = \lambda_\mathrm{max} /
-\lambda_\mathrm{min}$ vs.\ $N$.  At $N = 252$, $\kappa(C) \approx 789$; at $N =
+Figure~\ref{fig:stability}(c) shows the condition number
+$\kappa(C) = \lambda_\mathrm{max} / \lambda_\mathrm{min}$ against $N$.  At $N = 252$, $\kappa(C) \approx 789$; at $N =
 1000$, $\kappa(C) \approx 4 \times 10^3$.  The fitted power law is
 $\kappa \approx 1.08\,N^{1.19}$: the covariance matrix becomes increasingly
 ill-conditioned as more time steps are added, but only polynomially.  This growth is expected: adding time steps increases

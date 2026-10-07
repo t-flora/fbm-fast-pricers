@@ -83,7 +83,7 @@ exactly, the estimator
 \begin{equation}
   \hat{p}_\mathrm{cv} = e^{-rT}\,\frac{1}{M}\sum_{m=1}^{M}\bigl(V^{(m)} - \beta\,C^{(m)}\bigr)
 \end{equation}
-is unbiased for any fixed $\beta$.  I estimate the variance-optimal
+is unbiased for any fixed $\beta$.  I estimate the variance-optimal coefficient
 $\beta = \mathrm{Cov}(V, C)/\mathrm{Var}(C)$ on a separate pilot run of 10\% of the paths,
 so the main estimate stays exactly unbiased; the variance is then reduced by the
 factor $1/(1 - \mathrm{corr}(V, C)^2)$.  A single driver implements this for all three

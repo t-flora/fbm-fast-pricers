@@ -57,14 +57,13 @@ wisdom file (§\ref{sec:opt-opportunities}) for repeated calls at the same $N$.
 \subsection{\texttt{std::complex<double>} and the FFTW ABI}
 \label{sec:complex-cast}
 
-A note for the interested reader / C++ developer: FFTW's C interface expects \texttt{fftw\_complex*}, which is
-\texttt{double[2]}.  I allocate \texttt{std::vector<std::complex<double>>}
-and pass a \texttt{reinterpret\_cast<fftw\_complex*>} of its data pointer.
-This cast is valid, as the C++11 standard mandates that \texttt{complex<double>}
-has the same memory layout as \texttt{double[2]}, with the real part first,
-making the two representations ABI-compatible.  Using \texttt{std::vector}
-rather than a raw FFTW-allocated array lets RAII manage the buffer lifetime
-without a manual \texttt{fftw\_free}.
+A note for the C++ reader: FFTW's C interface expects \texttt{fftw\_complex*}, an
+array of \texttt{double[2]}.  The per-path sampler keeps its buffers in a
+\texttt{std::vector} of \texttt{std::complex<double>} and passes a
+\texttt{reinterpret\_cast} of the data pointer.  The cast is valid because the C++11
+standard guarantees that \texttt{std::complex<double>} has the layout of
+\texttt{double[2]}, real part first.  The vector lets RAII manage the buffer
+lifetime without a manual \texttt{fftw\_free}.
 
 \subsection{FFT normalization convention}
 \label{sec:normalization}
@@ -172,8 +171,8 @@ discretization differences.
 \subsection{Header-only pricers and ODR}
 \label{sec:odr}
 
-Each algorithm lives entirely in a \texttt{.hpp}: \texttt{cholesky.hpp},
-\texttt{fft.hpp}, and \texttt{lowrank.hpp}.  Each \texttt{price()} function
+Each algorithm lives entirely in one header (\texttt{cholesky.hpp},
+\texttt{fft.hpp} or \texttt{lowrank.hpp}), and each \texttt{price()} function
 is marked \texttt{inline}:
 \begin{verbatim}
 namespace cholesky { inline double price(...) { ... } }
