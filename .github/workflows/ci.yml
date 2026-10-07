@@ -1,7 +1,8 @@
 # Gating CI: builds the C++ code and runs both test suites on Ubuntu (GCC, system
 # packages). Runs on pushes to main and on pull requests, so a commit on a PR branch is
 # tested once (as part of the PR), not twice. macOS runs in a separate, non-gating
-# workflow (ci-macos.yml). The full benchmark (~8 min) and live-data scripts are not run.
+# workflow (ci-macos.yml). A second job runs the whole pipeline in fast mode (about two
+# minutes); the full benchmarks and the live-data IV script are not run.
 name: CI
 
 on:
@@ -36,3 +37,41 @@ jobs:
 
       - name: Python tests
         run: uv run --locked pytest tests/ -q
+
+  # Smoke test of the whole pipeline: quick C++ benchmarks (--quick) and every analysis
+  # script at small sizes, then a check that each expected figure was written. Catches
+  # scripts that break without any unit test noticing. The live-data IV script is skipped.
+  pipeline-smoke:
+    name: pipeline smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install C++ dependencies
+        run: sudo apt-get update && sudo apt-get install -y libeigen3-dev libfftw3-dev pkg-config
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync Python environment
+        run: uv sync --locked
+
+      - name: Run pipeline (fast mode, no live data)
+        run: ./run_pipeline.sh --fast --no-iv
+
+      - name: Check every figure was produced
+        run: |
+          missing=0
+          for f in construction_breakdown.png control_variate.png convergence.png error_vs_rank.png \
+                   greeks.png memory_profile.png memory_vs_N.png per_path_cost.png \
+                   perf_batch_size.png perf_batched.png perf_breakdown.png perf_threads.png \
+                   sensitivity_strike.png sensitivity_surface.png stability_report.png \
+                   structure_analysis.png time_vs_N.png validate_asian.png \
+                   variance_corrected_rank.png roughness_share.csv; do
+            if [ ! -s "plots/figures/$f" ]; then echo "missing: $f"; missing=1; fi
+          done
+          exit $missing
