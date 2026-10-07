@@ -115,3 +115,63 @@ def test_control_variate_is_unbiased_and_effective():
     # Independent runs agree within the (much smaller) CV error
     other = price_asian_call_cv(seed=4, **kw)
     assert abs(res["price"] - other["price"]) < 4 * np.hypot(res["se"], other["se"])
+
+
+# Long format of the published Oxford-Man file: unnamed date column with the exchange's
+# UTC offset (which changes with DST), indices stacked, rows not grouped by date
+OXFORD_MAN_CSV = """\
+,Symbol,rv5,rv10,bv,rk_parzen,open_time
+2000-01-04 00:00:00+00:00,.FTSE,1.1e-04,1.2e-04,1.0e-04,1.3e-04,80000
+2000-01-05 00:00:00-05:00,.SPX,2.5e-04,2.6e-04,2.4e-04,2.7e-04,93000
+2000-01-04 00:00:00+09:00,.N225,9.0e-05,9.1e-05,8.9e-05,9.2e-05,90000
+2000-01-03 00:00:00-05:00,.SPX,1.5e-04,1.6e-04,1.4e-04,1.7e-04,93000
+2000-07-03 00:00:00-04:00,.SPX,3.5e-04,3.6e-04,3.4e-04,3.7e-04,93000
+2000-01-04 00:00:00-05:00,.SPX,,2.1e-04,1.9e-04,2.2e-04,93000
+2000-01-06 00:00:00-05:00,.SPX,0.0,3.1e-04,2.9e-04,3.2e-04,93000
+2000-07-03 00:00:00+01:00,.FTSE,4.5e-04,4.6e-04,4.4e-04,4.7e-04,80000
+"""
+
+
+@pytest.fixture
+def oxford_man_csv(tmp_path):
+    path = tmp_path / "oxfordmanrealizedvolatilityindices.csv"
+    path.write_text(OXFORD_MAN_CSV)
+    return str(path)
+
+
+def test_oxford_man_loader_filters_sorts_and_cleans(oxford_man_csv):
+    import pandas as pd
+    rv = calibrate.load_oxford_man(oxford_man_csv)  # defaults: rv5, .SPX
+    # One symbol, sorted by date; the missing (NaN) and zero rv5 rows are dropped
+    assert list(rv.index) == list(pd.to_datetime(["2000-01-03", "2000-01-05", "2000-07-03"]))
+    np.testing.assert_allclose(rv.values, [1.5e-4, 2.5e-4, 3.5e-4])
+    assert rv.index.is_monotonic_increasing and rv.index.tz is None
+
+    rv10 = calibrate.load_oxford_man(oxford_man_csv, rv_col="rv10")
+    np.testing.assert_allclose(rv10.values, [1.6e-4, 2.1e-4, 2.6e-4, 3.1e-4, 3.6e-4])
+
+
+def test_oxford_man_loader_keeps_local_calendar_dates(oxford_man_csv):
+    import pandas as pd
+    # Local midnight east of Greenwich is the previous day in UTC; the date must not move
+    n225 = calibrate.load_oxford_man(oxford_man_csv, symbol=".N225")
+    assert list(n225.index) == [pd.Timestamp("2000-01-04")]
+    ftse = calibrate.load_oxford_man(oxford_man_csv, symbol=".FTSE")
+    assert list(ftse.index) == list(pd.to_datetime(["2000-01-04", "2000-07-03"]))
+    np.testing.assert_allclose(ftse.values, [1.1e-4, 4.5e-4])
+
+
+def test_oxford_man_loader_errors(oxford_man_csv):
+    with pytest.raises(ValueError, match=r"Symbol '\.DJI' not found.*\.FTSE.*\.N225.*\.SPX"):
+        calibrate.load_oxford_man(oxford_man_csv, symbol=".DJI")
+    with pytest.raises(ValueError, match=r"Column 'rv1' not found.*rv5.*rv10"):
+        calibrate.load_oxford_man(oxford_man_csv, rv_col="rv1")
+
+
+def test_oxford_man_loader_single_index_file(tmp_path):
+    # Older single-index exports have no Symbol column; the loader must still work
+    path = tmp_path / "spx.csv"
+    path.write_text(",rv5,bv\n2000-01-04 00:00:00-05:00,2e-4,1e-4\n"
+                    "2000-01-03 00:00:00-05:00,1e-4,1e-4\n")
+    rv = calibrate.load_oxford_man(str(path), symbol=".IGNORED")
+    np.testing.assert_allclose(rv.values, [1e-4, 2e-4])
