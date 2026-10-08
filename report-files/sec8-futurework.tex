@@ -54,6 +54,19 @@ volatility-path noise, about 4\% of the original variance; a second control buil
 the volatility path, for instance the integrated variance $\int_0^T \sigma_t^2\,dt$ whose
 mean~\eqref{eq:intvar} is known in closed form, could remove part of what remains.
 
+\subsection{Beyond one machine: GPUs and remaining per-path costs}
+\label{sec:gpu-future}
+
+The batched pricers of §\ref{sec:perf} are already in the form a GPU needs: the
+Cholesky and low-rank samplers reduce to one dense product per block (cuBLAS
+\texttt{trmm}/\texttt{gemm}), the circulant sampler to one batched FFT (cuFFT), and the
+counter-style block streams map onto per-thread generators such as Philox.  Two caveats
+from the CPU measurements carry over.  Once the transform is batched and the generator is fast, the price
+path and its $2N$ exponentials are the largest cost of a low-rank path and about a third
+of an FFT path, so the payoff loop would have to be vectorized as well.  And the fair
+baseline is the batched, multithreaded CPU code, not the per-path loop, which is
+already $1.6$--$3.7\times$ slower on one thread.
+
 \subsection{Hybrid Scheme for rough Bergomi}
 \label{sec:hybrid-future}
 
@@ -75,22 +88,6 @@ calibration procedures.  The structural insight of separating the kernel into
 a singular analytic part and a smooth FFT-able remainder is directly
 relevant to the fBM kernel $C(t,s)$ and motivates the hierarchical treatment
 in §\ref{sec:hmatrix-future}.
-
-\subsection{Other variance normalizations}
-\label{sec:variancenorm}
-
-Section~\ref{sec:levy} isolates roughness by matching the expected integrated
-variance~\eqref{eq:intvar} across $H$, which leaves about 70\% of the premium.  Other
-normalizations are defensible and would shift that share.  Matching the integrated
-log-volatility variance $\int_0^T \nu^2 t^{2H}\,dt$ instead gives the closed form
-\begin{equation}
-  \nu(H) = \nu_0\sqrt{\frac{2H+1}{2}\,T^{1-2H}},
-\end{equation}
-with $\nu_0$ fixed at the Brownian reference ($H = \nicefrac{1}{2}$).  From
-$(H, \nu) = (0.10, 0.52)$ this gives $\nu = 0.671$ at $H = 0.5$, against $0.651$ from
-matching~\eqref{eq:intvar}.  A third option holds the at-the-money implied volatility
-fixed, which is closer to how a trader would compare models.  Reporting the premium
-under all three would show how robust the roughness share is.
 
 \subsection{Spot-volatility correlation}
 \label{sec:rho-future}
