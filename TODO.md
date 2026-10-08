@@ -2,7 +2,7 @@
 
 A prioritized roadmap written after the October 2026 review (merged in `0f0744d`; see `CHANGELOG.md`). Each item gives the evidence for it from this repo, a concrete plan, and a criterion for when it is done. Effort is a rough guess: **S** is about a day, **M** a few days, **L** a week or more.
 
-**Status.** Items 1–3 are done (see [Done](#done) at the end; details in the README's Extensions section and `CHANGELOG.md`). The remaining items keep their numbers.
+**Status.** Items 1–6 are done, and most of item 11 (see [Done](#done) at the end; details in the README's Extensions and Performance sections and `CHANGELOG.md`). The remaining items keep their numbers.
 
 ## Priorities at a glance
 
@@ -11,51 +11,18 @@ A prioritized roadmap written after the October 2026 review (merged in `0f0744d`
 | 1 | ~~Variance-corrected low-rank sampler~~ | **Done:** bias within one SE at every rank | S |
 | 2 | ~~Conditional geometric control variate~~ | **Done:** variance reduction 26–29 for every sampler | S–M |
 | 3 | ~~Continuous integration~~ | **Done:** Ubuntu (gating) + macOS (informational) | S |
-| 4 | Batched sampling (GEMM, batched FFT, GPU) | Cholesky is bandwidth-bound at large $N$; a matrix-matrix product is not | S–M |
-| 5 | Faster Gaussian generator | Random numbers dominate the FFT and rSVD per-path cost | S |
-| 6 | Multithreading | Paths are independent; thread scaling also shows which methods are bandwidth-bound | M |
+| 4 | ~~Batched sampling (GEMM, batched FFT)~~ | **Done:** Cholesky $4.0\times$ faster at $N = 4000$; GPU port still open | S–M |
+| 5 | ~~Faster Gaussian generator~~ | **Done:** $4.0\times$ per draw; FFT path $2.1\times$ | S |
+| 6 | ~~Multithreading~~ | **Done:** per-path Cholesky stalls at $1.8\times$, batched reaches $4.1\times$ | M |
 | 7 | Hierarchical (HODLR) sampler | Far-field blocks are rank $\leq 3$; works where the FFT cannot | L |
 | 8 | Spot-vol correlation $\rho < 0$ | Needed for a real skew comparison against SPY | L |
 | 9 | Randomized quasi-Monte Carlo | Faster than $M^{-1/2}$ convergence | M |
 | 10 | Model extensions | Mean reversion (fOU), long memory ($H > \tfrac12$), surface calibration | M each |
-| 11 | Smaller items | Normalizations, Greeks, hardware counters, timing, report polish | S each |
+| 11 | Smaller items | Most done; hardware counters, calibration data, banded correction, GPU remain | S each |
 
-Suggested order for what remains: 4–6 (performance), then 7–10.
+Suggested order for what remains: 7–10, with the open parts of 11 as filler.
 
 ---
-
-## 4. Batched sampling as matrix-matrix products (S–M)
-
-**Evidence.** At $N = 4000$ the Cholesky loop streams the 122 MB factor once per path, and its effective rate falls from 35 GB/s ($N = 1000$) to 29 GB/s once $L$ leaves the 16 MB L2. It is bandwidth-bound: one mat-vec does 2 flops per 8-byte element.
-
-**Plan.**
-- Generate paths in blocks of $B$ (for example 64): compute $LZ$ for an $N \times B$ matrix $Z$ with a triangular matrix-matrix product, which reuses each element of $L$ $B$ times.
-- Do the same for $L_k Z$ in the low-rank sampler, and use `fftw_plan_many_dft` for batched FFTs.
-- Re-run the benchmark and compare the speedups with the bandwidth-bound regime.
-- The same batching is what a GPU port needs: cuBLAS for the Cholesky and low-rank products, batched cuFFT for the circulant sampler. Do the CPU version first; it shows how much of the gap is memory traffic.
-
-**Done when:** the Cholesky local exponent at large $N$ drops back to about 2 (no cache penalty), and all three methods are benchmarked batched and unbatched.
-
-## 5. Faster Gaussian generator (S)
-
-**Evidence.** At $N = 1000$, one FFT transform's $4N$ Gaussian draws take 60–70 µs with `std::mt19937` and `std::normal_distribution`, against about 8 µs for the inverse FFT. The FFT per-path cost is flat at 67–73 ns per time step, which is mostly random number generation.
-
-**Plan.**
-- Replace the generator with a fast one (xoshiro256++ or a counter-based Philox) and a ziggurat or vectorized Box–Muller normal sampler, behind the existing `make_rng` and `randn` interface.
-- Keep a fixed-seed regression test, since prices will change once more.
-
-**Done when:** the per-path breakdown (random numbers vs transform vs price path) is measured and reported, and the FFT per-path cost falls measurably.
-
-## 6. Multithreading (M)
-
-**Plan.**
-- Parallelize the path loop with OpenMP and reduce the payoff sum.
-- Give each thread an independent, reproducible stream: a counter-based generator (item 5) or one `std::seed_seq` per thread.
-- Report speedup against thread count for each method on the M2's four performance cores.
-
-**Why it is interesting.** The FFT and low-rank samplers should scale nearly linearly. Cholesky at large $N$ should flatten, because extra threads compete for the same memory bandwidth. That gives a direct test of the bandwidth argument in Section 5.2 of the report.
-
-**Done when:** thread-scaling curves for all methods at two $N$ values are in the benchmark output.
 
 ## 7. Hierarchical (HODLR) sampler (L)
 
@@ -99,18 +66,17 @@ Suggested order for what remains: 4–6 (performance), then 7–10.
 
 ## 11. Smaller items (S each)
 
-- **Other variance normalizations** for the roughness premium: match $\int_0^T \text{Var}(\log\sigma_t)\,dt$, or the ATM implied volatility, and report how the roughness share (70% today) moves.
-- **Greeks.** Bump-and-reprice with common random numbers is now cheap and precise. Add vega with respect to $\nu$ and sensitivity to $H$, and compare with pathwise or likelihood-ratio estimators.
-- **Hardware counters.** On Linux, measure actual DRAM traffic with `perf` (uncore counters) to replace the effective-bandwidth estimate.
-- **Timing robustness.** Repeats still vary by up to 15%. Use more repeats and report the spread (interquartile range) in the CSV and plots.
-- **Calibration data.** If an Oxford-Man (or other 5-minute realized variance) dataset becomes available, re-run `data/calibrate.py` and compare with the yfinance proxy.
-- **Report polish.** Five small overfull boxes remain (Sections 4, 5, 7 and 8; all under 32pt).
-- **A real fast mode for the pipeline.** `run_pipeline.sh --fast` shrinks the Python experiments but still runs the full benchmark (about 8 minutes) and the extensions (about 45 s). Add a quick mode to `benchmark` and `extensions` (for example $N \leq 500$, fewer paths, no 500k-path reference), so the whole pipeline can run in a few minutes.
-- **CI smoke test of the analysis scripts.** CI runs only the unit tests; the plotting and validation scripts are never exercised automatically. Once the quick mode exists, add a CI job running `./run_pipeline.sh --fast --no-iv` and checking that every figure is produced.
-- **Test the Oxford-Man loader.** `calibrate.load_oxford_man` (the `Symbol` filter and header handling) has no test because the data is not in the repo. A tiny synthetic CSV in the published long format would cover it.
-- **Use the control variate in the validation experiments.** `validate_asian.py`, `plot_sensitivity.py` and `validate_convergence.py` still use plain Monte Carlo. Switching to `price_asian_call_cv` would cut their noise by a factor of about 27 at no extra cost; the convergence study could show plain and control-variate curves side by side.
-- **Variance correction in the Python engine.** The corrected low-rank sampler exists only in C++.
-- **Watch the Ubuntu 26 runner migration.** GitHub moves `ubuntu-latest` to Ubuntu 26 from October 19, 2026, with a newer GCC and Eigen. If CI breaks, fix it or pin `ubuntu-24.04`.
+Done items are listed under [Done](#done). Still open:
+
+- **GPU port of the batched pricers.** The batched code is already in GPU form: cuBLAS `trmm`/`gemm` for Cholesky and low-rank, batched cuFFT for the circulant sampler, a counter-based generator (Philox) per block. Compare against the batched, multithreaded CPU code, not the per-path loop. Once the transform and generator are fast, the price path's $2N$ exponentials are the largest stage of a low-rank path and a third of an FFT path, so that loop needs vectorizing too (for example `-fveclib` or a SIMD `exp`).
+- **Vendor BLAS.** A quick trial linking Eigen to Apple Accelerate (`EIGEN_USE_BLAS`) was not faster than Eigen's own product at $B = 64$ and slower unbatched. It was measured on a loaded machine, so it is not conclusive.
+- **Hardware counters.** On Linux, measure actual DRAM traffic with `perf` (uncore counters) to replace the effective-bandwidth estimate. Not possible on the macOS development machine.
+- **Calibration data.** If an Oxford-Man (or other 5-minute realized variance) dataset becomes available, re-run `data/calibrate.py` and compare with the yfinance proxy. The loader is now tested on a synthetic file.
+- **Banded variance correction** (from item 1): replace the diagonal noise by a banded factorization of $C - L_k L_k^\top$ so the increments are right too.
+- **Second control on the volatility path** (from item 2), e.g. the integrated variance $\int_0^T \sigma_t^2\,dt$, whose mean is known in closed form.
+- **Variance correction in the Python IV and Greeks scripts.** The Python engine now has the corrected low-rank sampler (`lowrank_sampler`), but no experiment uses it yet.
+- **Timing hygiene on a fanless laptop.** Long $N = 4000$ runs throttle slightly ($\approx 8\%$ after 40 s), and background load distorts thread scaling. Cool-down pauses between configurations, or a desktop machine, would tighten the numbers.
+- **Watch the Ubuntu 26 runner migration.** GitHub moves `ubuntu-latest` to Ubuntu 26 from October 19, 2026, with a newer GCC and Eigen. The code builds clean under GCC 16 locally; if CI breaks, fix it or pin `ubuntu-24.04`.
 
 ---
 
@@ -124,10 +90,32 @@ Suggested order for what remains: 4–6 (performance), then 7–10.
 
 ### 2. Conditional geometric control variate
 
-`price_cv()` in all three samplers (shared driver `src/common/control_variate.hpp`) and `price_asian_call_cv()` in `data/rfsv_model.py`. $\beta$ is estimated on a separate pilot run of 10% of the paths, so the estimate is exactly unbiased. The variance reduction is 26–29 for every sampler at $N = 252$ and $1000$. Time to a 0.1% relative standard error at $N = 1000$ falls from 355 s to 15 s (Cholesky) and from 218 s to 9.6 s (FFT).
+`price_cv()` in all three samplers (shared driver `src/common/control_variate.hpp`) and `price_asian_call_cv()` in `data/rfsv_model.py`. $\beta$ is estimated on a separate pilot run of 10% of the paths, so the estimate is exactly unbiased. The variance reduction is 26–29 for every sampler at $N = 252$ and $1000$. Time to a 0.1% relative standard error at $N = 1000$ falls from 401 s to 17 s (Cholesky) and from 234 s to 10 s (FFT).
 
 The reduction is set by $\text{corr}(V, C) = 0.981$, not by the raw payoff correlation (0.998). The control cancels price-shock noise but not volatility-path noise, which is most of the remaining 4% of the variance. **Open follow-up:** a second control on the volatility path (or quasi-Monte Carlo, item 9) to remove that part.
 
 ### 3. Continuous integration
 
-`.github/workflows/ci.yml` builds the C++ code and runs `ctest` and `pytest` on Ubuntu (GCC, apt packages); it is the gating check and the README badge. `.github/workflows/ci-macos.yml` does the same on macOS (Apple Clang, Homebrew) as an informational check, because GitHub's macOS runners are capacity-constrained: the first post-merge run on `main` was cancelled after 15 minutes without ever getting a runner, and its re-run waited several hours. Both run on pushes to `main` and on pull requests, so a PR commit is tested once rather than twice. The full benchmark and the live-data IV script are not run in CI.
+`.github/workflows/ci.yml` builds the C++ code and runs `ctest` and `pytest` on Ubuntu (GCC, apt packages); it is the gating check and the README badge. `.github/workflows/ci-macos.yml` does the same on macOS (Apple Clang, Homebrew) as an informational check, because GitHub's macOS runners are capacity-constrained: the first post-merge run on `main` was cancelled after 15 minutes without ever getting a runner, and its re-run waited several hours. Both run on pushes to `main` and on pull requests, so a PR commit is tested once rather than twice. A second Ubuntu job runs the whole pipeline in fast mode and checks every figure (item 11). The full benchmarks and the live-data IV script are not run in CI.
+
+### 4–6. Batched sampling, a faster generator, multithreading
+
+`price_batched(N, M, batched::Config{batch, threads, rng})` in all three samplers, with the shared driver `src/common/batched_mc.hpp` and the generator `src/common/fast_rng.hpp` (xoshiro256++ and a 256-layer ziggurat). Measured by `./build/performance`, plotted by `plots/plot_performance.py`.
+
+- **Batching (4).** Blocks of $B = 64$ paths: one triangular product $LZ$, one GEMM $L_k Z$, or one `fftw_plan_many_dft` call. The Cholesky transform gets $4.3\times$ faster at $N = 4000$ (about 42 GFlop/s), the low-rank product $2.6\times$, the FFT not at all (each transform is already in cache). Its local exponent between $N = 2000$ and 4000 falls from 2.33 to 1.74, which meets the done criterion (about 2, no cache penalty). All three samplers are benchmarked batched and unbatched.
+- **Generator (5).** 3.8 ns per normal against 15.2 ns, $4.0\times$. The per-path breakdown (random numbers, transform, price path) is in `perf_breakdown.csv` and the report. The FFT path gets $2.1\times$ faster at every $N$, all from the generator. The tests check the distribution on $10^7$ draws, pin the xoshiro reference outputs, and pin a fixed-seed price (Clang and GCC agree to $10^{-15}$).
+- **Threads (6).** `std::thread` over blocks rather than OpenMP, which Apple Clang lacks. Each block's stream is seeded by $(\text{seed}, b)$ and sums are reduced in block order, so prices are bitwise identical for any thread count. Thread scaling at $N = 500$ and 4000 for all methods, batched and unbatched, is in `perf_threads.csv`. At $N = 4000$ the per-path Cholesky loop peaks at $1.8\times$ and falls to $1.5\times$ at eight threads (bandwidth-bound), while batched Cholesky reaches $3.1\times$ on four performance cores and $4.1\times$ on eight.
+
+Single-thread speedups over the original loop with $B = 64$ and the fast generator: Cholesky $2.2$–$4.0\times$ (growing with $N$), FFT $2.0$–$2.2\times$, rSVD $1.7$–$1.9\times$.
+
+### 11. Smaller items (done)
+
+- **Other variance normalizations.** `validate_asian.py` matches $\nu$ at $H = 0.5$ three ways. The roughness share of the ATM premium is 70% (integrated variance), 65% (integrated log-variance, closed form) and 58% (ATM implied volatility, by conditional Monte Carlo and Brent's method).
+- **Greeks.** `data/greeks.py`: pathwise vega with a differentiated control variate ($2.900 \pm 0.035$) agrees with central finite differences under common random numbers ($2.892 \pm 0.035$ at $h = 0.005$); $\partial V/\partial H = -2.40 \pm 0.05$.
+- **Timing robustness.** The main benchmark takes the median of 5 repeats and writes the interquartile range (`wall_time_q1_s`, `wall_time_q3_s`); `plot_scaling.py` draws it. The IQR caught a disturbed run (34% at one point) that was discarded.
+- **Report polish.** No overfull boxes remain.
+- **Quick mode.** `--quick` for `benchmark`, `extensions` and `performance`; `./run_pipeline.sh --fast` now runs everything in about two minutes.
+- **CI smoke test.** A second job in `ci.yml` runs `./run_pipeline.sh --fast --no-iv` and checks that every figure is written.
+- **Oxford-Man loader test.** Four tests on a synthetic long-format CSV. They found two bugs, now fixed: dates east of Greenwich moved back a day (UTC conversion), and zero RV values were kept (log of zero).
+- **Control variate in the validation experiments.** `validate_asian.py`, `plot_sensitivity.py` and `validate_convergence.py` use `price_asian_call_cv`; the convergence study shows plain and control-variate curves side by side.
+- **Variance correction in the Python engine.** `lowrank_sampler(..., corrected=True)` and `simulate_log_vol_paths_lowrank` in `data/rfsv_model.py`, mirroring the C++ sampler, with tests.

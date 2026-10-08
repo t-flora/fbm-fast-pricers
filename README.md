@@ -14,11 +14,12 @@ The project asks how far asymptotic complexity predicts real speedups on this pr
 
 **Headline results** ($M = 10{,}000$ paths, $N$ from 64 to 4000, Apple M2, single-threaded):
 
-- **FFT wins at scale.** It overtakes Cholesky at $N \approx 250$ and is $1.6\times$ faster at $N = 1000$ and $7.6\times$ faster at $N = 4000$ (2.9 s vs 22.3 s), with $O(N)$ memory instead of $O(N^2)$.
+- **FFT wins at scale.** It overtakes Cholesky at $N \approx 250$ and is $1.7\times$ faster at $N = 1000$ and $6.7\times$ faster at $N = 4000$ (2.9 s vs 19.7 s), with $O(N)$ memory instead of $O(N^2)$.
+- **Batching, a faster generator and threads** (opt-in `price_batched`) speed up every sampler on one thread: Cholesky $4.0\times$ at $N = 4000$ (blocked $LZ$ removes the memory-bandwidth bound), FFT $2.1\times$ (all from the generator). Thread scaling confirms the bandwidth argument: the per-path Cholesky loop at $N = 4000$ stalls at $1.8\times$, the batched one reaches $4.1\times$.
 - **The FFT method is exact** for every $H \leq \tfrac{1}{2}$. The smallest circulant eigenvalue has the closed form $\Delta t^{2H}(N^{2H} - (N-1)^{2H}) > 0$.
-- **Low-rank rSVD is fastest but biased.** At $k = 32$ it is $10\times$ faster than Cholesky at $N = 4000$, but it underprices by about 4% even at $k = 128$. The bias follows the *variance* it discards (13% of the total at $k = 128$), which the commonly reported Frobenius error (1.2%) badly understates.
+- **Low-rank rSVD is fastest but biased.** At $k = 32$ it is $9\times$ faster than Cholesky at $N = 4000$, but it underprices by about 4% even at $k = 128$. The bias follows the *variance* it discards (13% of the total at $k = 128$), which the commonly reported Frobenius error (1.2%) badly understates.
 - **Scaling.** FFT and rSVD scale linearly in $N$ over the whole range. Cholesky's local exponent rises from about 1 to 2.1 as the $N^2$ mat-vec takes over and its factor outgrows the 16 MB cache.
-- **Roughness premium.** At the money, rough volatility ($H = 0.1$) adds $0.47$ to the Asian price relative to $H = 0.5$ at the same $\nu$. About 70% of that ($0.33$) survives when the two models are matched on integrated variance.
+- **Roughness premium.** At the money, rough volatility ($H = 0.1$) adds $0.47$ to the Asian price relative to $H = 0.5$ at the same $\nu$. Between 58% and 70% of it survives when the two models are matched on integrated variance, integrated log-variance, or ATM implied volatility.
 
 ---
 
@@ -29,22 +30,22 @@ The project asks how far asymptotic complexity predicts real speedups on this pr
 ```bash
 brew install eigen fftw cmake
 
-# Build: cholesky_pricer, fft_pricer, rsvd_pricer, benchmark
+# Build: cholesky_pricer, fft_pricer, rsvd_pricer, benchmark, extensions, performance, tests
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 
 # Each pricer prints price and wall time at N = 252, 500, 1000
 ./build/fft_pricer
 
-# Full benchmark (~8 min; N up to 4000, median of 3 timings):
-# writes benchmarks/results/*.csv and reference_price.txt
+# Full benchmark (~12 min; N up to 4000, median of 5 timings with their IQR):
+# writes benchmarks/results/*.csv and reference_price.txt (--quick: ~20 s smoke test)
 ./build/benchmark
 
 # Plots from the benchmark CSVs
 uv run python plots/plot_scaling.py
 
-# Tests (~5 s): sampler covariances, FFT eigenvalue closed form, rSVD vs optimum,
-# Cholesky/FFT price agreement, calibration recovery
+# Tests (~30 s): sampler covariances, FFT eigenvalue closed form, rSVD vs optimum,
+# Cholesky/FFT price agreement, calibration recovery, extensions, batched pricers
 ./build/test_samplers          # or: ctest --test-dir build
 uv run pytest tests/
 ```
@@ -53,7 +54,7 @@ To run everything end to end (build, benchmark, all analysis scripts), use the p
 
 ```bash
 ./run_pipeline.sh            # production parameters
-./run_pipeline.sh --fast     # small M, quick smoke test
+./run_pipeline.sh --fast     # small N and M everywhere: ~2 min smoke test (run in CI)
 ./run_pipeline.sh --no-iv    # skip the step that needs internet (live SPY chains)
 ```
 
@@ -103,7 +104,7 @@ Build $C$, factor $C = LL^\top$ once in place with `Eigen::LLT<Eigen::Ref<Matrix
 
 An earlier version multiplied by a dense copy of $L$, zeros included: twice the flops, and three $N \times N$ matrices in memory. Fixing that cut the $N = 1000$ run by about 30% with unchanged prices.
 
-The factorization is a small share of runtime: 24 ms of 1.15 s at $N = 1000$, and 0.74 s of 22.3 s at $N = 4000$. The $O(MN^2)$ loop dominates once $N^2$ outweighs the $O(N)$ per-path work (Gaussian draws, `exp` calls, payoff accumulation); see Results.
+The factorization is a small share of runtime: 25 ms of 1.22 s at $N = 1000$, and 0.80 s of 19.7 s at $N = 4000$. The $O(MN^2)$ loop dominates once $N^2$ outweighs the $O(N)$ per-path work (Gaussian draws, `exp` calls, payoff accumulation); see Results.
 
 ### 2. Circulant embedding + FFT: `src/fft/fft.hpp`
 
@@ -147,39 +148,39 @@ The rSVD itself is not the problem: at every rank the Frobenius error is within 
 
 ## Results
 
-All numbers come from `./build/benchmark` on an Apple M2 (`-O3 -march=native`, single-threaded) and from the CSVs in `benchmarks/results/`. Each timing is the median of 3 repeats with the same seed.
+All numbers come from `./build/benchmark` on an Apple M2 MacBook Air (`-O3 -march=native`, single-threaded, on AC power) and from the CSVs in `benchmarks/results/`. Each timing is the median of 5 repeats with the same seed; the CSV also records their interquartile range (median 0.6%), which is how disturbed runs are caught. The machine is fanless, and macOS Low Power Mode slows everything by about $1.8\times$, so check `pmset -g` before benchmarking.
 
 ### Runtime
 
 | Method | $N = 64$ | $252$ | $1000$ | $2000$ | $4000$ |
 |---|---|---|---|---|---|
-| Cholesky | 0.040 s | 0.18 s | 1.15 s | 5.17 s | 22.25 s |
-| FFT | 0.045 s | 0.17 s | 0.71 s | 1.49 s | 2.91 s |
-| rSVD, $k = 32$ | 0.033 s | 0.10 s | 0.43 s | 0.94 s | 2.13 s |
+| Cholesky | 0.038 s | 0.18 s | 1.22 s | 4.10 s | 19.66 s |
+| FFT | 0.046 s | 0.18 s | 0.71 s | 1.42 s | 2.93 s |
+| rSVD, $k = 32$ | 0.031 s | 0.10 s | 0.44 s | 0.93 s | 2.13 s |
 
-A single power law fits FFT and rSVD well ($\alpha = 1.02$ for both, $R^2 \geq 0.995$) but not Cholesky ($\alpha = 1.52$, $R^2 = 0.978$), whose curve bends. Local exponents between successive $N$ show why:
+A single power law fits FFT and rSVD well ($\alpha = 1.00$ and $1.02$, $R^2 \geq 0.997$) but not Cholesky ($\alpha = 1.48$, $R^2 = 0.983$), whose curve bends. Local exponents between successive $N$ show why:
 
 | Method | 64–128 | 128–252 | 252–500 | 500–1000 | 1000–2000 | 2000–4000 |
 |---|---|---|---|---|---|---|
-| Cholesky | 0.95 | 1.22 | 1.29 | 1.44 | 2.17 | 2.10 |
-| FFT | 0.92 | 1.02 | 1.04 | 1.02 | 1.06 | 0.97 |
+| Cholesky | 1.05 | 1.19 | 1.28 | 1.52 | 1.75 | 2.26 |
+| FFT | 1.09 | 0.87 | 1.02 | 1.02 | 1.00 | 1.04 |
 
-At small $N$ the $O(N)$ per-path work hides the $N^2$ mat-vec. Above $N \approx 1000$ the mat-vec dominates and the exponent slightly exceeds 2, because $L$ no longer fits in cache (next section).
+At small $N$ the $O(N)$ per-path work hides the $N^2$ mat-vec. Above $N \approx 1000$ the mat-vec dominates, and from 2000 to 4000 the exponent exceeds 2 because $L$ no longer fits in cache (next section).
 
-FFT's $\log N$ factor stays invisible even over this $64\times$ range: its MC cost per path per time step is flat at 67–73 ns (`plots/per_path_cost.png`). The transform is a small part of each path; random number generation and the price-path arithmetic dominate, and those are $O(N)$. Construction is negligible for FFT and at most a few percent for Cholesky, but 23% of rSVD's runtime at $N = 4000$ (`plots/construction_breakdown.png`).
+FFT's $\log N$ factor stays invisible even over this $64\times$ range: its MC cost per path per time step is flat at 70–76 ns (`plots/per_path_cost.png`). The transform is a small part of each path; random number generation and the price-path arithmetic dominate, and those are $O(N)$. Construction is negligible for FFT and at most a few percent for Cholesky, but 24% of rSVD's runtime at $N = 4000$ (`plots/construction_breakdown.png`).
 
 ### Memory and cache
 
 | Method ($N = 1000$) | Resident during MC loop | Measured lifetime peak |
 |---|---|---|
-| Cholesky | $8N^2 = 7.6$ MB ($L$ overwrites $C$; the lower half is read per path) | 9.7 MB |
+| Cholesky | $8N^2 = 7.6$ MB ($L$ overwrites $C$; the lower half is read per path) | 11.1 MB |
 | FFT | 0.08 MB ($2N$ scale factors, two length-$2N$ complex buffers) | 0.4 MB |
-| rSVD, $C$ held | 7.6 MB + $L_k$ | 10.7 MB |
-| rSVD, $C$ freed | 0.24 MB ($L_k$ only, $8Nk$ bytes) | 12.8 MB |
+| rSVD, $C$ held | 7.6 MB + $L_k$ | 11.3 MB |
+| rSVD, $C$ freed | 0.24 MB ($L_k$ only, $8Nk$ bytes) | 11.3 MB |
 
-The measured peak (`measured_peak_mb`) comes from running each method in a forked child process and reading its peak RSS via `wait4`, minus that of an idle child. It exceeds the dominant-array size because of allocator and matrix-multiply workspace. Freeing $C$ shrinks what is resident during the MC loop, but not the lifetime peak, since $C$ must exist while $L_k$ is built. At $N = 4000$ the Cholesky and rSVD peaks reach about 145–160 MB, while FFT needs 1.1 MB.
+The measured peak (`measured_peak_mb`) comes from running each method in a forked child process and reading its peak RSS via `wait4`, minus that of an idle child. It exceeds the dominant-array size because of allocator and matrix-multiply workspace. Freeing $C$ shrinks what is resident during the MC loop, but not the lifetime peak, since $C$ must exist while $L_k$ is built. At $N = 4000$ the Cholesky and rSVD peaks reach about 142–146 MB, while FFT needs 1.2 MB.
 
-The relevant cache on the M2 is the 16 MB L2 shared by the performance cores; the M2 has no L3. $L$ fits in it up to $N \approx 1450$. The `est_bandwidth_GBs` column ($4N(N+1)M$ bytes, the lower triangle of $L$ once per path, divided by wall time) rises to 35 GB/s at $N = 1000$ and then *falls*, to 31 GB/s at $N = 2000$ and 29 GB/s at $N = 4000$, once $L$ spills out of cache. That turnover is the signature of the loop becoming memory-bandwidth bound. It is still an effective rate, not a direct measurement of DRAM traffic.
+The relevant cache on the M2 is the 16 MB L2 shared by the performance cores; the M2 has no L3. $L$ fits in it up to $N \approx 1450$. The `est_bandwidth_GBs` column ($4N(N+1)M$ bytes, the lower triangle of $L$ once per path, divided by wall time) rises to 33 GB/s at $N = 1000$ and 39 GB/s at $N = 2000$, then *falls* to 33 GB/s at $N = 4000$, where $L$ is eight times the cache. That turnover is the signature of the loop becoming memory-bandwidth bound (the $N = 2000$ point varies between runs; an earlier run gave 31 GB/s). It is still an effective rate, not a direct measurement of DRAM traffic; the thread-scaling results below are the cleaner test.
 
 ### Reference price
 
@@ -199,20 +200,31 @@ These use `data/rfsv_model.py`, a vectorized numpy port of the FFT sampler that 
 
 | Script | What it does | Output (`plots/figures/`) |
 |---|---|---|
-| `data/validate_convergence.py` | Price $\pm 1\sigma$ vs $M$ over 20 seeds against a same-grid $10^6$-path reference; checks $\sigma \propto M^{-1/2}$ | `convergence.png` |
-| `data/validate_asian.py` | Price vs strike for several $H$ against Lévy (1992) and exact GBM; roughness premium at fixed and at variance-matched $\nu$ | `validate_asian.png` |
+| `data/validate_convergence.py` | Price $\pm 1\sigma$ vs $M$ over 20 seeds against a same-grid $10^6$-path reference, plain and control variate; checks $\sigma \propto M^{-1/2}$ | `convergence.png` |
+| `data/validate_asian.py` | Price vs strike for several $H$ against Lévy (1992) and exact GBM; roughness premium at fixed $\nu$ and under three normalizations of $\nu$ | `validate_asian.png`, `roughness_share.csv` |
+| `data/greeks.py` | Vega in $\nu$ (pathwise vs central difference) and $\partial V/\partial H$ | `greeks.png` |
 | `plots/plot_sensitivity.py` | ATM price over $H \times \nu$; price vs strike for $H \in \{0.05, \ldots, 0.5\}$ | `sensitivity_surface.png`, `sensitivity_strike.png` |
 | `data/validate_iv.py` | RFSV smile vs live SPY option IVs (needs internet; `--M 20000`) | `validate_iv.png` |
 | `data/validate_stability.py` | FFT eigenvalues vs $H$; $\kappa(L_k)$ vs $k$; $\kappa(C)$ vs $N$ | `stability_report.png` |
 | `plots/plot_structure.py` | Toeplitz structure of fGn; off-diagonal vs full spectrum of $C$ | `structure_analysis.png` |
 | `data/profile_memory.py` | `tracemalloc` peak of the numpy fBM sampler vs $(N, M)$ | `memory_profile.png` |
 
-All comparisons between configurations (different $H$, $\nu$ or $K$) use common random numbers, so differences are far more precise than the absolute prices. Key results:
+All comparisons between configurations (different $H$, $\nu$ or $K$) use common random numbers, so differences are far more precise than the absolute prices. The Asian-price experiments use the control variate (next section), and every price comes with its standard error. Key results:
 
-- **Convergence.** With 20 seeds the standard deviation of the estimate falls with fitted slope $-0.488$ ($R^2 = 0.986$) against the theoretical $-0.5$. The same-grid reference ($N = 252$) is $5.3252 \pm 0.0095$.
-- **Lévy is accurate at realistic volatility.** At the money it gives 4.625, against $4.606 \pm 0.027$ for exact GBM by Monte Carlo. (At the old 100% volatility it overpriced by about 6%.)
-- **Roughness premium.** At the money, $p(H{=}0.10) - p(H{=}0.50) = 0.468 \pm 0.008$ at $\nu = 0.52$. But lower $H$ also raises the expected integrated variance $\mathbb{E}\int_0^T \sigma_t^2\,dt$ by 19%. Matching it (by solving for $\nu = 0.651$ at $H = 0.5$) leaves $0.330 \pm 0.009$, so about 70% of the premium is due to roughness itself. The premium peaks at the money and is positive at every strike from 80 to 120.
-- **Sensitivity.** At $\nu = 0.52$ the ATM price falls from 5.37 ($H = 0.05$) to 4.74 ($H = 0.5$). The gap between $H = 0.1$ and $H = 0.5$ vanishes at small $\nu$ (0.02 at $\nu = 0.1$) and grows to 0.94 at $\nu = 0.7$.
+- **Convergence.** With 20 seeds the standard deviation of the plain estimate falls with fitted slope $-0.488$ ($R^2 = 0.986$) against the theoretical $-0.5$; the control variate keeps the rate ($-0.462$, $R^2 = 0.965$) with a $27\times$ smaller variance per path. The same-grid reference ($N = 252$, $10^6$ paths) is $5.3217 \pm 0.0018$.
+- **Lévy is accurate at realistic volatility.** At the money it gives 4.625, against $4.617 \pm 0.0005$ for exact GBM by Monte Carlo: it overprices by 0.2%. (At the old 100% volatility it overpriced by about 6%.)
+- **Roughness premium.** At the money, $p(H{=}0.10) - p(H{=}0.50) = 0.471 \pm 0.004$ at $\nu = 0.52$. But lower $H$ also raises the variance of the volatility path, so the comparison model at $H = 0.5$ should get a larger $\nu$. The share of the premium that survives depends on what is matched:
+
+  | Matched at $H = 0.5$ | $\nu(H{=}0.5)$ | ATM premium | Share |
+  |---|---|---|---|
+  | nothing (same $\nu$) | 0.520 | $0.471 \pm 0.004$ | 100% |
+  | $\mathbb{E}\int_0^T \sigma_t^2\,dt$ | 0.651 | $0.332 \pm 0.005$ | $70.3 \pm 0.5$% |
+  | $\int_0^T \text{Var}(\log\sigma_t)\,dt$ | 0.671 | $0.306 \pm 0.005$ | $65.0 \pm 0.6$% |
+  | ATM implied volatility | 0.697 | $0.274 \pm 0.006$ | $58.0 \pm 0.8$% |
+
+  Most of the premium is due to roughness under every normalization. It peaks at the money and is positive at every strike from 80 to 120.
+- **Sensitivity.** At $\nu = 0.52$ the ATM price falls from 5.46 ($H = 0.05$) to 4.86 ($H = 0.5$). The gap between $H = 0.1$ and $H = 0.5$ vanishes at small $\nu$ (0.016 at $\nu = 0.1$) and grows to 0.91 at $\nu = 0.7$. Cell standard errors are 0.003–0.03.
+- **Greeks.** The pathwise vega $\partial V/\partial\nu = 2.900 \pm 0.035$ agrees with central finite differences under common random numbers ($2.892 \pm 0.035$ at $h = 0.005$); $\partial V/\partial H = -2.40 \pm 0.05$.
 - **IV smile.** For a snapshot taken October 2, 2026 the model smile is a symmetric U with its minimum at the money: curvature, but no skew. SPY's smile falls steeply below the money. With $\rho = 0$ the model cannot produce skew, so the comparison tests curvature only. Two implementation details matter here. All strikes share one set of paths, and the simulated $S_T$ is rescaled so that its sample mean equals the forward; without that, a 0.05% forward error tilted the model curve into a fake skew. Deep in-the-money market IVs are inflated by the $r = 0$, no-dividend assumption and are shown off scale.
 
 ---
@@ -249,14 +261,41 @@ With $\rho = 0$, the log of the geometric average $G$ is Gaussian given the vola
 
 | ($M = 10{,}000$) | Variance reduction, $N = 252$ / $1000$ | Time to 0.1% relative SE at $N = 1000$, plain / CV |
 |---|---|---|
-| Cholesky | 27 / 29 | 355 s / 15.0 s |
-| FFT | 29 / 28 | 218 s / 9.6 s |
-| rSVD $k = 32$ | 26 / 28 | 125 s / 5.5 s (but biased by ~4%) |
-| rSVD $k = 32$ + diag | 27 / 26 | 173 s / 7.8 s |
+| Cholesky | 27 / 29 | 401 s / 16.9 s |
+| FFT | 29 / 28 | 234 s / 10.0 s |
+| rSVD $k = 32$ | 26 / 28 | 128 s / 5.7 s (but biased by ~4%) |
+| rSVD $k = 32$ + diag | 27 / 26 | 179 s / 8.1 s |
 
 The variance falls by a factor of 26–29 for every sampler, and the time to a given accuracy falls by about the same factor, pilot included. The reduction is set by the correlation between $V$ and the control $C$, which is 0.981 ($1/(1 - 0.981^2) \approx 27$); the raw arithmetic and geometric payoffs correlate more strongly (0.998). The gap is informative. Because $C$ has mean zero given the volatility path, the control cancels the noise from the price shocks but not the noise from the volatility path itself. The remaining variance, about 4% of the original, is roughly the size of that path-driven part ($\mathbb{E}[(G - K)^+ \mid \sigma]$ alone accounts for 2.7% of $\text{Var}(V)$). Removing it would take a second control on the volatility path, or quasi-Monte Carlo. A smaller variance does not fix bias: the plain rSVD sampler converges quickly to the wrong price. The closed form needs $\rho = 0$, since conditioning on the volatility path must leave the price shocks independent.
 
 Both extensions are covered by the test suites: the closed form matches a Monte Carlo average for a fixed volatility path, the control-variate prices of the exact samplers agree, the corrected sampler's marginal variances equal $\text{diag}(C)$ to $10^{-16}$, and its price matches the exact one, while the uncorrected sampler's bias is detected.
+
+---
+
+## Performance: batching, a faster generator, threads
+
+Opt-in `price_batched(N, M, batched::Config{batch, threads, rng})` in all three samplers (driver `src/common/batched_mc.hpp`), measured by a separate program:
+
+```bash
+./build/performance                        # ~10 min (--quick: ~10 s)
+uv run python plots/plot_performance.py    # -> plots/figures/perf_{breakdown,batched,batch_size,threads}.png
+```
+
+- **Batching.** Paths are generated in blocks of $B = 64$: one triangular product $LZ$ (Cholesky), one GEMM $L_k Z$ (low-rank), or one `fftw_plan_many_dft` call (FFT). $L$ is read once per block instead of once per path.
+- **Fast generator.** xoshiro256++ with a 256-layer ziggurat (`src/common/fast_rng.hpp`): 3.8 ns per normal against 15.2 ns for `std::mt19937` + `std::normal_distribution`.
+- **Threads.** `std::thread` over blocks. Block $b$ uses its own stream seeded by $(\text{seed}, b)$ and block sums are reduced in order, so the price is bitwise identical for any thread count (tested).
+
+Time per path, one thread ($M = 10{,}000$):
+
+| | $N = 1000$: original → batched + fast | $N = 4000$: original → batched + fast |
+|---|---|---|
+| Cholesky | 112 µs → 49 µs ($2.3\times$) | 1930 µs → 485 µs ($4.0\times$) |
+| FFT | 71 µs → 34 µs ($2.1\times$) | 287 µs → 140 µs ($2.1\times$) |
+| rSVD $k = 32$ | 40 µs → 23 µs ($1.8\times$) | 159 µs → 90 µs ($1.8\times$) |
+
+Batching only helps where the transform is memory-bound: it speeds up the Cholesky transform $4.3\times$ at $N = 4000$ (to about 42 GFlop/s) and the low-rank product $2.6\times$, but leaves the FFT unchanged, since each transform already works in cache. The Cholesky local exponent between $N = 2000$ and 4000 falls from 2.33 to 1.74. $B = 2$ is *slower* than the mat-vec; the gain saturates around $B = 64$. Batched FFT is still $3.5\times$ faster than batched Cholesky at $N = 4000$ (down from $6.7\times$).
+
+Thread scaling is the cleanest test of the bandwidth argument. At $N = 4000$ the per-path Cholesky loop peaks at $1.8\times$ (three threads) and falls to $1.5\times$ at eight, while batched Cholesky reaches $3.1\times$ on the four performance cores and $4.1\times$ on all eight; FFT and rSVD reach $4.3$–$5.7\times$ on eight. The machine is a fanless MacBook Air: thread-scaling numbers come from a run with the machine otherwise idle, and a repeat with one core busy gave the same picture with noisier curves.
 
 ---
 
@@ -279,13 +318,12 @@ The yfinance proxy recovers $H$ close to the published $0.1$. Its $\nu$ is infla
 
 ## Future work
 
-`TODO.md` has the full prioritized roadmap, with evidence, plans and done-when criteria. The top items:
+`TODO.md` has the full prioritized roadmap, with evidence, plans and done-when criteria.
 
-Items 1–3 of the roadmap are done: the two extensions above, and CI on pushes to `main` and on pull requests (Ubuntu with GCC as the gating check, macOS with Apple Clang as an informational check). The top remaining items:
+Items 1–6 of the roadmap are done: the two extensions above, CI, and the three performance items. Most of the small items are done too: quick modes, a CI pipeline smoke test, the control variate in the validation scripts, Greeks, other variance normalizations, timing IQRs, and the Oxford-Man loader test. The top remaining items:
 
-1. **Performance:** batch paths into matrix-matrix products (Cholesky is bandwidth-bound at large $N$), use a faster Gaussian generator (it dominates the FFT per-path cost), and add multithreading.
-2. **A hierarchical (HODLR) sampler**, which exploits the rank-3 far-field blocks and works on non-uniform grids where the FFT cannot.
-3. **Spot-vol correlation $\rho < 0$**, needed for a real skew comparison. This moves to a Volterra (rough Bergomi) representation, where the Hybrid Scheme of Bennedsen, Lunde & Pakkanen (2017) becomes the relevant fast method.
+1. **A hierarchical (HODLR) sampler**, which exploits the rank-3 far-field blocks and works on non-uniform grids where the FFT cannot.
+2. **Spot-vol correlation $\rho < 0$**, needed for a real skew comparison. This moves to a Volterra (rough Bergomi) representation, where the Hybrid Scheme of Bennedsen, Lunde & Pakkanen (2017) becomes the relevant fast method.
 
 ---
 
@@ -294,19 +332,24 @@ Items 1–3 of the roadmap are done: the two extensions above, and CI on pushes 
 ```
 src/common/        params.hpp (model + run parameters), covariance.hpp (fBM kernel),
                    asian_payoff.hpp (vol path -> price path -> payoff), rng.hpp,
-                   control_variate.hpp (geometric control-variate MC driver)
+                   control_variate.hpp (geometric control-variate MC driver),
+                   batched_mc.hpp (blocked, multithreaded MC driver),
+                   fast_rng.hpp (xoshiro256++ + ziggurat normal generator)
 src/cholesky/      cholesky.hpp + cholesky_pricer.cpp
 src/fft/           fft.hpp + fft_pricer.cpp
 src/rsvd/          lowrank.hpp (sampler), rsvd.hpp (Halko et al. Alg. 4.4), rsvd_pricer.cpp
 benchmarks/        benchmark.cpp -> results/{time_vs_N,error_vs_rank}.csv, reference_price.txt;
-                   extensions.cpp -> results/{variance_corrected_rank,control_variate}.csv
+                   extensions.cpp -> results/{variance_corrected_rank,control_variate}.csv;
+                   performance.cpp -> results/perf_{breakdown,batched,batch_size,threads}.csv;
+                   timing.hpp (median + IQR of repeats)
 data/              params.py (shared model parameters), calibrate.py, rfsv_model.py (numpy engine),
-                   validate_*.py, profile_memory.py
-plots/             plot_scaling.py, plot_structure.py, plot_sensitivity.py, plot_extensions.py;
+                   validate_*.py, greeks.py, profile_memory.py
+plots/             plot_scaling.py, plot_structure.py, plot_sensitivity.py, plot_extensions.py,
+                   plot_performance.py;
                    figures/ (generated)
 experiments/       prototype_further_work.py (prototypes for roadmap items)
-.github/workflows/ ci.yml (Ubuntu, gating) and ci-macos.yml (macOS, informational): build +
-                   both test suites on pushes to main and on pull requests
+.github/workflows/ ci.yml (Ubuntu, gating: both test suites + a fast-pipeline smoke job) and
+                   ci-macos.yml (macOS, informational: tests); on pushes to main and on PRs
 report-files/      LaTeX report (main.tex + sec*.tex)
 ALGORITHMS.md      Line-by-line walkthrough of the C++ samplers
 tests/             test_samplers.cpp (C++, via ctest) and test_python.py (pytest)
