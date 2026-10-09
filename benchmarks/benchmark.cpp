@@ -84,6 +84,7 @@ static constexpr double BANDWIDTH_GBS = 100.0;
 int main(int argc, char** argv) {
     using namespace params;
     const bool quick = has_flag(argc, argv, "--quick");
+    make_results_dir();
     if (quick) REPS = 1;
     std::cout << "Mode: " << (quick ? "QUICK (smoke test)" : "FULL") << "\n";
 

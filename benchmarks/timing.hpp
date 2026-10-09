@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <vector>
 
 using Clock = std::chrono::high_resolution_clock;
@@ -39,4 +40,11 @@ inline bool has_flag(int argc, char** argv, const char* flag) {
     for (int k = 1; k < argc; ++k)
         if (std::strcmp(argv[k], flag) == 0) return true;
     return false;
+}
+
+// The benchmarks write to benchmarks/results/ (relative to the project root). A fresh
+// clone has no such directory, since everything in it is gitignored, and std::ofstream
+// would then fail silently, so create it first.
+inline void make_results_dir() {
+    std::filesystem::create_directories("benchmarks/results");
 }

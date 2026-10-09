@@ -91,6 +91,7 @@ static double transform_per_path(Worker& worker, int N, int n, const std::vector
 int main(int argc, char** argv) {
     using namespace params;
     const bool quick = has_flag(argc, argv, "--quick");
+    make_results_dir();
     const int REPS = quick ? 1 : 3;
     const double budget = quick ? 0.02 : 0.15;  // seconds per breakdown measurement
     const std::vector<int> Ns = quick ? std::vector<int>{64, 252, 500}

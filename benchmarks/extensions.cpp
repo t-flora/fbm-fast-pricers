@@ -67,6 +67,7 @@ static Structure structure_errors(const Eigen::MatrixXd& C, const Eigen::MatrixX
 int main(int argc, char** argv) {
     using namespace params;
     const bool quick = has_flag(argc, argv, "--quick");
+    make_results_dir();
     std::cout << "Mode: " << (quick ? "QUICK (smoke test)" : "FULL") << "\n";
 
     // ── (a) Variance-corrected low-rank sampler vs rank ─────────────────────
