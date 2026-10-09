@@ -1,12 +1,15 @@
-\section{Extensions: variance correction and a control variate}
+\section{Extensions: variance correction, a control variate, and faster sampling}
 \label{sec:extensions}
 
-Two weaknesses stand out in the results above: the low-rank sampler underprices at
-every rank (§\ref{sec:errorrank}), and plain Monte Carlo needs $\approx 130{,}000$
-paths for a $1\%$ confidence half-width (§\ref{sec:convergence}).  This section adds
-one remedy for each.  Both are opt-in methods alongside the original pricers, measured
-by a separate program (\texttt{./build/extensions}), so none of the results in the
-preceding sections change.
+Three weaknesses stand out in the results above: the low-rank sampler underprices at
+every rank (§\ref{sec:errorrank}), plain Monte Carlo needs $\approx 130{,}000$
+paths for a $1\%$ confidence half-width (§\ref{sec:convergence}), and the per-path
+loops leave most of the machine idle: one core, one mat-vec at a time, and a random
+number generator that dominates the FFT path (§\ref{sec:timing}).  This section adds
+one remedy for each, and then uses the control variate to estimate Greeks.  All are
+opt-in methods alongside the original pricers, measured by separate programs
+(\texttt{./build/extensions}, \texttt{./build/performance}), so none of the results in
+the preceding sections change.
 
 \subsection{Variance-corrected low-rank sampler}
 \label{sec:varcorr}
@@ -83,7 +86,7 @@ exactly, the estimator
 \begin{equation}
   \hat{p}_\mathrm{cv} = e^{-rT}\,\frac{1}{M}\sum_{m=1}^{M}\bigl(V^{(m)} - \beta\,C^{(m)}\bigr)
 \end{equation}
-is unbiased for any fixed $\beta$.  I estimate the variance-optimal
+is unbiased for any fixed $\beta$.  I estimate the variance-optimal coefficient
 $\beta = \mathrm{Cov}(V, C)/\mathrm{Var}(C)$ on a separate pilot run of 10\% of the paths,
 so the main estimate stays exactly unbiased; the variance is then reduced by the
 factor $1/(1 - \mathrm{corr}(V, C)^2)$.  A single driver implements this for all three
@@ -102,10 +105,10 @@ samplers.
     & \multicolumn{2}{c}{Variance reduction} & \multicolumn{2}{c}{Time to 0.1\% SE ($N = 1000$)} \\
     Sampler & $N = 252$ & $N = 1000$ & plain & control variate \\
     \midrule
-    Cholesky             & 27.2 & 29.3 & 355~s & 15.0~s \\
-    Circulant + FFT      & 28.8 & 28.1 & 218~s & 9.6~s \\
-    rSVD ($k = 32$)      & 25.7 & 27.7 & 125~s & 5.5~s \\
-    rSVD ($k = 32$) + diag & 26.6 & 25.8 & 173~s & 7.8~s \\
+    Cholesky             & 27.2 & 29.3 & 401~s & 16.9~s \\
+    Circulant + FFT      & 28.8 & 28.1 & 234~s & 10.0~s \\
+    rSVD ($k = 32$)      & 25.7 & 27.7 & 128~s & 5.7~s \\
+    rSVD ($k = 32$) + diag & 26.6 & 25.8 & 179~s & 8.1~s \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -126,9 +129,9 @@ samplers.
 
 Table~\ref{tab:cv} and Figure~\ref{fig:cv} show the results.  The variance falls by a
 factor of 26--29 for every sampler at both grid sizes, and the time to a given accuracy
-falls by about the same factor: at $N = 1000$, from 355~s to 15~s for Cholesky and from
-218~s to 9.6~s for FFT.  For the purposes of this report, that is a larger saving than
-any change of sampler: switching from Cholesky to FFT at $N = 1000$ gains $1.6\times$, while
+falls by about the same factor: at $N = 1000$, from 401~s to 17~s for Cholesky and from
+234~s to 10~s for FFT.  For the purposes of this report, that is a larger saving than
+any change of sampler: switching from Cholesky to FFT at $N = 1000$ gains $1.7\times$, while
 the control variate gains about $23$--$24\times$ within either.
 
 Two details limit the gain.  First, the reduction is set by
@@ -141,10 +144,187 @@ control on the volatility path, or quasi-Monte Carlo (§\ref{sec:qmc-future}), w
 needed to remove it.  Second, a smaller standard error does not fix bias.  The plain
 rSVD sampler with the control variate converges $27\times$ faster to a price that is still
 about 4\% too low; combined with the correction of §\ref{sec:varcorr}, it reaches an
-accurate price in 7.8~s at $N = 1000$.
+accurate price in 8.1~s at $N = 1000$.
 
 \paragraph{Limitations: }
 The conditional closed form~\eqref{eq:geomcond} requires $\rho = 0$.  With spot-vol
 correlation (§\ref{sec:rho-future}), conditioning on the volatility path no longer
 leaves the price shocks independent, and the control variate would have to be
 rebuilt, for instance by conditioning on the volatility's driving noise instead.
+
+\subsection{Batched sampling, a faster generator, and threads}
+\label{sec:perf}
+
+The per-path loops of §\ref{sec:benchmarks} waste the hardware in three ways.  The
+Cholesky mat-vec $Lz$ reads each element of $L$ once and uses it in a single
+multiply-add, 2 flops per 8 bytes, so at large $N$ it runs at the speed of memory
+rather than of the arithmetic units (§\ref{sec:memory}).  The Gaussian generator,
+\texttt{std::mt19937} with \texttt{std::normal\_distribution}, costs 15~ns per draw and
+dominates the FFT path.  And every path runs on one of eight cores.  I address each with
+an opt-in \texttt{price\_batched()} in all three samplers, driven by one shared loop.
+
+\paragraph{Design. }
+Paths are generated in blocks of $B$.  Each sampler fills an $N \times B$ block of
+log-volatility paths at once: Cholesky with one triangular matrix-matrix product $LZ$,
+which reads $L$ once per block instead of once per path; the low-rank sampler with one
+$N \times k$ by $k \times B$ product; the FFT sampler with one batched FFTW call over
+$B/2$ transforms.  The fast generator combines xoshiro256++ \citep{blackman2021scrambled}
+with a 256-layer ziggurat \citep{marsaglia2000ziggurat}, in which about 99\% of draws
+cost one table comparison and one multiply; it draws in 3.8~ns, $4.0\times$ faster.
+Blocks are also the unit of parallel work: threads take blocks from an atomic counter,
+block $b$ draws from its own stream seeded by $(\text{seed}, b)$, and the block sums are
+added in block order.  The price is therefore bitwise identical for any number of
+threads, which the test suite checks.  Experiment design: controlled, $M = 10{,}000$
+paths, seed, $k = 32$; independent, $N$, block size $B$, generator, and thread count;
+dependent, Monte Carlo time (median of three repeats) and the time of each stage of a
+path.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\linewidth]{perf_breakdown.png}
+  \caption{Time per path split into its three stages: drawing the normals, the
+    transform (mat-vec, FFT or $L_k z$; normals replayed from a buffer), and the price
+    path with its payoff.  For each sampler, the upper bar is the original per-path loop
+    with \texttt{std::mt19937}, the lower bar the batched version ($B = 64$) with the
+    ziggurat generator.  Each stage is timed in isolation, so the bars
+    understate the end-to-end times of Figure~\ref{fig:perfbatched}.
+    Controlled: $k = 32$, one thread.  Independent: $N$, sampler, configuration.
+    Dependent: time per path ($\mu$s).}
+  \label{fig:perfbreakdown}
+\end{figure*}
+
+\paragraph{Where the time goes. }
+Figure~\ref{fig:perfbreakdown} splits each path into its stages.  The generator is a
+fixed $4.0\times$ win wherever random numbers are drawn.  Batching helps only where the
+transform is memory-bound: it cuts the Cholesky transform by $2.6\times$ at $N = 1000$
+and $4.3\times$ at $N = 4000$ (from 1621 to 379~$\mu$s), and the low-rank product by
+$2.6\times$.  At $N = 4000$ the batched product runs at $N^2/379\,\mu\mathrm{s}
+\approx 42$~GFlop/s, roughly three quarters of the nominal double-precision peak of one
+performance core (four 128-bit FMA units at 3.5~GHz), while the mat-vec streams $L$ at
+$\approx 40$~GB/s.  The FFT transform does not change at all (5.4 against 5.3~$\mu$s at
+$N = 1000$): each transform already works in cache, so a batch has nothing to reuse.
+After both changes, the price path and its $2N$ exponentials, untouched here, are the
+largest stage of a low-rank path and about a third of an FFT path.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{perf_batched.png}
+  \caption{MC time per path vs $N$ for four configurations of each sampler, one thread:
+    the original loop (dotted), unbatched with the ziggurat (dashed), and $B = 64$ with
+    either generator (solid).  Color encodes the generator.  Bottom right: local scaling
+    exponent of the Cholesky time between neighbouring $N$.
+    Controlled: $M = 10{,}000$, $k = 32$, one thread.
+    Independent: $N$, block size, generator.
+    Dependent: MC time per path (median of 3 repeats; bars: interquartile range).}
+  \label{fig:perfbatched}
+\end{figure}
+
+\paragraph{Speedups on one thread. }
+Figure~\ref{fig:perfbatched} shows the end-to-end effect.  The FFT sampler gains
+$2.0$--$2.2\times$ at every $N$, entirely from the generator.  The low-rank sampler gains
+$1.7$--$1.9\times$, mostly from the generator.  The Cholesky gain grows with $N$, from
+$2.2\times$ at $N = 64$ to $2.3\times$ at $N = 1000$ and $4.0\times$ at $N = 4000$
+(19.3~s to 4.85~s), because batching removes the memory penalty: the local exponent
+between $N = 2000$ and 4000 falls from 2.33 for the original loop to 1.74, below the
+$O(N^2)$ flop count because the $O(N)$ stages still carry weight.  The block size has to
+be large enough to pay off.  At $B = 2$ the triangular product is slower than the
+mat-vec (127 against 87~$\mu$s per path at $N = 1000$), and the gain saturates around
+$B = 64$.  Batching narrows the gap between the methods but does not reorder them: at
+$N = 4000$ the batched FFT sampler is still $3.5\times$ faster than batched Cholesky (140
+against 485~$\mu$s per path), down from $6.7\times$.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{perf_threads.png}
+  \caption{Speedup over one thread vs thread count, unbatched (dashed; the FFT pairs two
+    paths per transform) and $B = 64$ (solid), with the fast generator.  The shaded
+    region uses the M2's efficiency cores.
+    Controlled: $M = 10{,}000$ ($N = 500$) or $2{,}000$ ($N = 4000$), fast generator.
+    Independent: threads, $N$, block size.
+    Dependent: speedup of the MC time (median of 3 repeats).}
+  \label{fig:perfthreads}
+\end{figure}
+
+\paragraph{Thread scaling as a test of the bandwidth argument. }
+Figure~\ref{fig:perfthreads} gives the most direct evidence for the claim of
+§\ref{sec:memory} that the large-$N$ Cholesky loop is memory-bound.  A compute-bound loop
+should scale with cores, while a bandwidth-bound one should stall once the cores
+saturate the memory bus.  At $N = 4000$ the unbatched Cholesky loop reaches only
+$1.8\times$ (at three threads) and falls back to $1.5\times$ at eight, as extra threads
+compete for the same bandwidth.  The batched version, which reads $L$ once per 64 paths,
+reaches $3.1\times$ on the four performance cores and $4.1\times$ with all eight.  The FFT
+and low-rank samplers scale similarly whether batched or not, to $3.3$--$3.8\times$ on
+four cores at $N = 500$ and to $4.3$--$5.7\times$ on eight at either $N$.  Even at
+$N = 500$, where $L$ fits in cache, the unbatched Cholesky loop scales worst
+($2.7\times$ on four cores), since the performance cores share one L2.  The efficiency cores add
+less than the performance cores, so no curve stays linear past four threads.
+
+\paragraph{Limitations: }
+The machine is a fanless laptop, so sustained runs can throttle: back-to-back
+$N = 4000$ Cholesky runs slowed by $\approx 8\%$ after 40~s, and multithreaded runs heat
+the chip faster.  The thread-scaling data come from a run with the machine otherwise
+idle.  A repeat with a background process using one core gave the same qualitative
+picture (unbatched Cholesky at $N = 4000$ peaking at $2.3\times$ and falling to
+$1.6\times$), but noisier curves.  The stage times are measured in isolation with warm
+caches, so their sum understates a full path by 20--40\%.  Batching changes which
+paths a seed produces, so batched prices agree with the original ones only within Monte
+Carlo error (checked in the test suite), not to the last digit.
+
+\subsection{Greeks with common random numbers}
+\label{sec:greeks}
+
+With the control variate and common random numbers, sensitivities become cheap to
+estimate precisely.  I compute two for the ATM Asian call at the model parameters:
+vega with respect to the vol-of-vol $\nu$, and the sensitivity to the Hurst exponent
+$H$ (\texttt{data/greeks.py}).  The point of comparing estimators is a consistency
+check: two unrelated estimators of $\partial V/\partial\nu$ must agree.
+
+The first is the central difference $[\hat V(\nu + h) - \hat V(\nu - h)]/(2h)$, with
+both prices from the same random numbers.  Each path's payoff then moves continuously
+with $\nu$, so the per-path difference is $O(h)$ and the variance stays bounded as
+$h \to 0$; with independent random numbers it would grow like $h^{-2}$.  The second is
+the pathwise estimator \citep{glasserman2004monte}, which needs no bump.  Since
+$\partial\sigma_n/\partial\nu = \sigma_n W^H_{t_n}$, differentiating the discrete price
+path gives
+\begin{equation}
+  \label{eq:pathwise}
+  \frac{\partial V}{\partial \nu} = \mathbf{1}\{A > K\}\,\frac{1}{N}\sum_{n=1}^{N} S_n
+  \sum_{m \leq n} \sigma_m W^H_{t_m}\bigl(\sqrt{\Delta t}\,Z_m - \sigma_m \Delta t\bigr),
+\end{equation}
+where $A$ is the arithmetic average.  The payoff is Lipschitz in $A$, so the derivative
+and the expectation can be exchanged and~\eqref{eq:pathwise} is unbiased.  The control
+variate differentiates too: $C = Y - \mathbb{E}[Y \mid \sigma]$ has mean zero for every
+$\nu$, so $\partial C/\partial\nu$ does as well, and the closed
+form~\eqref{eq:geomcond} differentiates through its mean and variance parameters.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{greeks.png}
+  \caption{Greeks of the ATM Asian call.
+    \textbf{(a)} $\partial V/\partial\nu$ by central difference with common random
+    numbers and the control variate, against bump size $h$, and the pathwise
+    estimator~\eqref{eq:pathwise} with and without its differentiated control.
+    \textbf{(b)} $\partial V/\partial H$ by central difference.  Error bars are
+    $\pm 1$ standard error from the per-path differences.
+    Controlled: $H = 0.10$, $\nu = 0.52$, $\sigma_0 = 0.2$, $K = S_0 = 100$, $T = 1$,
+    $r = 0$, $N = 252$, $M = 20{,}000$.
+    Independent: bump size $h$, estimator.
+    Dependent: $\partial V/\partial\nu$, $\partial V/\partial H$.}
+  \label{fig:greeks}
+\end{figure}
+
+The two agree (Figure~\ref{fig:greeks}).  The pathwise vega with its control is
+$2.900 \pm 0.035$; the central difference is $2.892 \pm 0.035$ at $h = 0.005$, $0.16$
+standard errors away, and drifts up to $2.909$ at $h = 0.1$.  Since every bump size
+reuses the same paths, that drift is the $O(h^2)$ curvature bias, measured more
+precisely than the error bars suggest.  The differentiated control cuts the variance
+of the pathwise estimator by a factor of 7, against 27 for prices.
+
+The sensitivity to roughness is $\partial V/\partial H = -2.40 \pm 0.05$, flat for $h$
+from $0.0025$ to $0.02$.  There is no simple pathwise form, because $H$ enters through
+the square root of the circulant spectrum, but with common random numbers the bumped
+paths move smoothly with $H$ and the finite difference is well behaved.  At the model
+point, lowering $H$ by $0.01$ raises the price by $0.024$, $0.45\%$; raising $\nu$ by
+$0.01$ raises it by $0.029$.  In these units the price is about as sensitive to
+roughness as to vol-of-vol, consistent with the sensitivity surface of
+Figure~\ref{fig:sensitivity}.

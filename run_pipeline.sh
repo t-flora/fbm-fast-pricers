@@ -7,7 +7,7 @@
 #
 # Usage:
 #   ./run_pipeline.sh            # full run (production parameters)
-#   ./run_pipeline.sh --fast     # reduced M for quick smoke-test
+#   ./run_pipeline.sh --fast     # quick smoke test: small N and M everywhere (a few minutes)
 #   ./run_pipeline.sh --no-build # skip cmake (binaries already built)
 #   ./run_pipeline.sh --no-iv    # skip validate_iv.py (needs internet)
 #
@@ -38,14 +38,18 @@ if [ "$FAST" -eq 1 ]; then
     M_IV=500;      N_IV=30
     M_SENS=1000;   N_SENS=63
     CONV_SEEDS=3;  CONV_MAX_M=5000
+    M_GREEKS=2000; N_GREEKS=63
     STRUCT_SMALL=32; STRUCT_LARGE=64
-    echo "Mode: FAST (reduced M for smoke-test)"
+    CPP_FLAGS="--quick"
+    echo "Mode: FAST (reduced N and M for smoke-test)"
 else
     M_ASIAN=10000; N_ASIAN=252
     M_IV=20000;    N_IV=63
     M_SENS=10000;  N_SENS=252
     CONV_SEEDS=20; CONV_MAX_M=25000
+    M_GREEKS=20000; N_GREEKS=252
     STRUCT_SMALL=64; STRUCT_LARGE=128
+    CPP_FLAGS=""
     echo "Mode: PRODUCTION"
 fi
 
@@ -61,13 +65,13 @@ echo "════════════════════════�
 # ── Step 1: Build ─────────────────────────────────────────────────────────────
 if [ "$NO_BUILD" -eq 0 ]; then
     echo ""
-    echo "── Step 1/11: cmake build ──"
+    echo "── Step 1/13: cmake build ──"
     cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev --log-level=WARNING
     cmake --build build --parallel
     echo "  done."
 else
     echo ""
-    echo "── Step 1/11: cmake build — SKIPPED (--no-build) ──"
+    echo "── Step 1/13: cmake build — SKIPPED (--no-build) ──"
 fi
 
 # ── Tests: stop before benchmarking if any sampler check fails ─────────────────
@@ -78,61 +82,72 @@ uv run pytest tests/ -q
 
 # ── Step 2: C++ benchmark ─────────────────────────────────────────────────────
 echo ""
-echo "── Step 2/11: C++ benchmark ──"
-./build/benchmark
+echo "── Step 2/13: C++ benchmark ──"
+./build/benchmark ${CPP_FLAGS}
 
 # ── Step 3: Scaling + construction breakdown + memory plots ───────────────────
 echo ""
-echo "── Step 3/11: plot_scaling.py ──"
+echo "── Step 3/13: plot_scaling.py ──"
 uv run python plots/plot_scaling.py
 
 # ── Step 4: Extensions (variance-corrected low-rank, control variate) ─────────
 # Needs benchmarks/results/reference_price.txt from Step 2
 echo ""
-echo "── Step 4/11: extensions benchmark + plot_extensions.py ──"
-./build/extensions
+echo "── Step 4/13: extensions benchmark + plot_extensions.py ──"
+./build/extensions ${CPP_FLAGS}
 uv run python plots/plot_extensions.py
 
 # ── Step 5: Python memory profiling ───────────────────────────────────────────
 echo ""
-echo "── Step 5/11: profile_memory.py ──"
+echo "── Step 5/13: profile_memory.py ──"
 uv run python data/profile_memory.py
 
 # ── Step 6: Structural analysis ───────────────────────────────────────────────
 echo ""
-echo "── Step 6/11: plot_structure.py (N-small=${STRUCT_SMALL}, N-large=${STRUCT_LARGE}) ──"
+echo "── Step 6/13: plot_structure.py (N-small=${STRUCT_SMALL}, N-large=${STRUCT_LARGE}) ──"
 uv run python plots/plot_structure.py --N-small "${STRUCT_SMALL}" --N-large "${STRUCT_LARGE}"
 
 # ── Step 7: MC convergence ────────────────────────────────────────────────────
 echo ""
-echo "── Step 7/11: validate_convergence.py (seeds=${CONV_SEEDS}, max-M=${CONV_MAX_M}) ──"
+echo "── Step 7/13: validate_convergence.py (seeds=${CONV_SEEDS}, max-M=${CONV_MAX_M}) ──"
 uv run python data/validate_convergence.py --n-seeds "${CONV_SEEDS}" --max-M "${CONV_MAX_M}"
 
 # ── Step 8: Stability ─────────────────────────────────────────────────────────
 echo ""
-echo "── Step 8/11: validate_stability.py ──"
+echo "── Step 8/13: validate_stability.py ──"
 uv run python data/validate_stability.py
 
 # ── Step 9: Lévy benchmark + roughness premium ────────────────────────────────
 echo ""
-echo "── Step 9/11: validate_asian.py (M=${M_ASIAN}, N=${N_ASIAN}) ──"
+echo "── Step 9/13: validate_asian.py (M=${M_ASIAN}, N=${N_ASIAN}) ──"
 uv run python data/validate_asian.py --M "${M_ASIAN}" --N "${N_ASIAN}"
 
 # ── Step 10: IV smile vs SPY (requires internet) ───────────────────────────────
 echo ""
 if [ "$NO_IV" -eq 0 ]; then
-    echo "── Step 10/11: validate_iv.py (M=${M_IV}, N=${N_IV}) ──"
+    echo "── Step 10/13: validate_iv.py (M=${M_IV}, N=${N_IV}) ──"
     uv run python data/validate_iv.py --M "${M_IV}" --N "${N_IV}" || {
         echo "  WARNING: validate_iv.py failed (network or data issue) — continuing."
     }
 else
-    echo "── Step 10/11: validate_iv.py — SKIPPED (--no-iv) ──"
+    echo "── Step 10/13: validate_iv.py — SKIPPED (--no-iv) ──"
 fi
 
 # ── Step 11: Sensitivity heatmap + price vs strike ────────────────────────────
 echo ""
-echo "── Step 11/11: plot_sensitivity.py (M=${M_SENS}, N=${N_SENS}) ──"
+echo "── Step 11/13: plot_sensitivity.py (M=${M_SENS}, N=${N_SENS}) ──"
 uv run python plots/plot_sensitivity.py --M "${M_SENS}" --N "${N_SENS}"
+
+# ── Step 12: Batched sampling, fast generator, thread scaling ─────────────────
+echo ""
+echo "── Step 12/13: performance benchmark + plot_performance.py ──"
+./build/performance ${CPP_FLAGS}
+uv run python plots/plot_performance.py
+
+# ── Step 13: Greeks (vega in nu, sensitivity to H) ─────────────────────────────
+echo ""
+echo "── Step 13/13: greeks.py (M=${M_GREEKS}, N=${N_GREEKS}) ──"
+uv run python data/greeks.py --M "${M_GREEKS}" --N "${N_GREEKS}"
 
 # ── Collect outputs ───────────────────────────────────────────────────────────
 echo ""
@@ -141,6 +156,7 @@ mkdir -p "${RUN_DIR}/results"
 
 # Plots
 cp plots/figures/*.png "${RUN_DIR}/" 2>/dev/null || true
+cp plots/figures/*.csv "${RUN_DIR}/results/" 2>/dev/null || true   # e.g. roughness_share.csv
 
 # Benchmark CSVs and reference price
 cp benchmarks/results/*.csv  "${RUN_DIR}/results/" 2>/dev/null || true
@@ -171,11 +187,14 @@ Parameters
   validate_asian      --M ${M_ASIAN} --N ${N_ASIAN}
   validate_iv         --M ${M_IV}    --N ${N_IV}  $([ "$NO_IV" -eq 1 ] && echo "(SKIPPED)" || echo "")
   plot_sensitivity    --M ${M_SENS}  --N ${N_SENS}
+  greeks              --M ${M_GREEKS} --N ${N_GREEKS}
   validate_convergence --n-seeds ${CONV_SEEDS} --max-M ${CONV_MAX_M}
   plot_structure      --N-small ${STRUCT_SMALL} --N-large ${STRUCT_LARGE}
   validate_stability  (no flags)
   profile_memory      (no flags)       → plots/memory_profile.png
-  extensions          (no flags)       → plots/variance_corrected_rank.png, control_variate.png
+  benchmark, extensions, performance  ${CPP_FLAGS:-(no flags)}
+  extensions          → plots/variance_corrected_rank.png, control_variate.png
+  performance         → plots/perf_breakdown.png, perf_batched.png, perf_threads.png
 
 Plots
 $(ls "${RUN_DIR}"/*.png 2>/dev/null | xargs -n1 basename | sed 's/^/  /')

@@ -57,14 +57,13 @@ wisdom file (§\ref{sec:opt-opportunities}) for repeated calls at the same $N$.
 \subsection{\texttt{std::complex<double>} and the FFTW ABI}
 \label{sec:complex-cast}
 
-A note for the interested reader / C++ developer: FFTW's C interface expects \texttt{fftw\_complex*}, which is
-\texttt{double[2]}.  I allocate \texttt{std::vector<std::complex<double>>}
-and pass a \texttt{reinterpret\_cast<fftw\_complex*>} of its data pointer.
-This cast is valid, as the C++11 standard mandates that \texttt{complex<double>}
-has the same memory layout as \texttt{double[2]}, with the real part first,
-making the two representations ABI-compatible.  Using \texttt{std::vector}
-rather than a raw FFTW-allocated array lets RAII manage the buffer lifetime
-without a manual \texttt{fftw\_free}.
+A note for the C++ reader: FFTW's C interface expects \texttt{fftw\_complex*}, an
+array of \texttt{double[2]}.  The per-path sampler keeps its buffers in a
+\texttt{std::vector} of \texttt{std::complex<double>} and passes a
+\texttt{reinterpret\_cast} of the data pointer.  The cast is valid because the C++11
+standard guarantees that \texttt{std::complex<double>} has the layout of
+\texttt{double[2]}, real part first.  The vector lets RAII manage the buffer
+lifetime without a manual \texttt{fftw\_free}.
 
 \subsection{FFT normalization convention}
 \label{sec:normalization}
@@ -130,7 +129,7 @@ since the random draws and the arithmetic on the non-zero entries are the same.
 This correction matters for the comparison in §\ref{sec:timing}: against the dense
 baseline the FFT method looked $1.5\times$ faster at $N = 1000$, but against the fair
 one it was only $\approx 9\%$ faster, until the change in §\ref{sec:two-paths}
-restored a $1.6\times$ advantage.
+restored a $1.7\times$ advantage.
 
 \subsection{Two fGn paths per inverse FFT}
 \label{sec:two-paths}
@@ -172,8 +171,8 @@ discretization differences.
 \subsection{Header-only pricers and ODR}
 \label{sec:odr}
 
-Each algorithm lives entirely in a \texttt{.hpp}: \texttt{cholesky.hpp},
-\texttt{fft.hpp}, and \texttt{lowrank.hpp}.  Each \texttt{price()} function
+Each algorithm lives entirely in one header (\texttt{cholesky.hpp},
+\texttt{fft.hpp} or \texttt{lowrank.hpp}), and each \texttt{price()} function
 is marked \texttt{inline}:
 \begin{verbatim}
 namespace cholesky { inline double price(...) { ... } }
@@ -190,9 +189,10 @@ calls \texttt{price()} directly.
 
 Several results in earlier drafts of this report came from bugs that nothing
 checked, so both engines now have test suites that run in a few seconds, gate
-the benchmark pipeline, and run in continuous integration on every push (Ubuntu with
-GCC and macOS with Apple Clang).  The C++ suite (\texttt{tests/test\_samplers.cpp},
-30 checks)
+the benchmark pipeline, and run in continuous integration on every pull request and
+push to the main branch (Ubuntu with GCC as the gating check, macOS with Apple Clang as
+an informational one).  The C++ suite (\texttt{tests/test\_samplers.cpp},
+40 checks)
 verifies that $LL^\top = C$ to $10^{-15}$; that every circulant eigenvalue minimum
 matches the closed form~\eqref{eq:lambda-min} to $10^{-8}$ for $H \in
 \{0.05, 0.10, 0.30, 0.50\}$ and $N \in \{64, 252, 1000\}$; that the sample covariance of
@@ -201,31 +201,34 @@ entry, with no correlation between the two halves; that the rSVD error is within
 $5\%$ of the Eckart--Young optimum, including $k$ close to $N$; and that Cholesky and
 FFT prices agree within Monte Carlo error.  Nine further checks cover the extensions
 of §\ref{sec:extensions}, including a negative control that the uncorrected low-rank
-sampler's bias is detected.  The Python suite (18 tests) checks the same eigenvalue and
-covariance properties for the numpy engine, the Black--Scholes limit at $\nu = 0$,
-recovery of known $(H, \nu)$ by the variogram calibration, the control variate, and that
-the C++ and Python parameter files agree.
+sampler's bias is detected, and ten cover the batched pricers of §\ref{sec:perf}: the
+fast generator's distribution and reference outputs, the covariance of batched paths,
+a price that is bitwise identical for any thread count, and a fixed-seed regression
+value that Apple Clang and GCC reproduce to $10^{-15}$.  The Python suite (27 tests)
+checks the same eigenvalue and covariance properties for the numpy engine, the
+Black--Scholes limit at $\nu = 0$, recovery of known $(H, \nu)$ by the variogram
+calibration, the Oxford-Man data loader on a synthetic file, the control variate, the
+variance-corrected low-rank sampler, the pathwise vega of §\ref{sec:greeks}, and that
+the C++ and Python parameter files agree.  A second CI job runs the whole pipeline at
+small sizes (\texttt{./run\_pipeline.sh --fast}, about two minutes) and checks that
+every figure is produced, so analysis scripts cannot break unnoticed.
 
 I checked that the suites catch the bug they were written for: reintroducing the
 halved $\gamma(0)$ makes seven C++ checks and eight Python tests fail.
 
-\subsection{Optimization opportunities not implemented}
+\subsection{Optimization opportunities}
 \label{sec:opt-opportunities}
 
-Two straightforward improvements would accelerate the MC loop without
-algorithmic changes:
+The pricers described so far run one path at a time on one thread, with
+\texttt{std::mt19937}.  Three improvements need no change to the algorithms: generating
+paths in blocks so the core operation becomes a matrix-matrix product, a faster Gaussian
+generator, and parallelism across paths.  I implement and measure all three in
+§\ref{sec:perf}, as opt-in variants, so the benchmarks of §\ref{sec:benchmarks} are
+unchanged.
 
-\paragraph{OpenMP path-level parallelism}
-The outer \texttt{for(m)} loop over paths is embarrassingly parallel: each
-path reads only the shared, read-only factor $L$ (or $L_k$, or the FFTW
-eigenvalues) and accumulates independently.  A \texttt{\#pragma omp parallel
-for reduction(+:payoff\_sum)} decorator with thread-local RNG state would
-give near-linear multi-core scaling with no algorithmic changes.
-
-\paragraph{FFTW wisdom files}
-The current code uses \texttt{FFTW\_ESTIMATE}, which accepts the default
-transform plan.  For repeated calls at a fixed $N$ (e.g., in a calibration loop
-that prices the same contract many times), \texttt{FFTW\_MEASURE} or a
-pre-saved wisdom file would eliminate the one-time planning overhead by
-caching the optimal decomposition into FFT subproblems
-\citep{frigo2005design}.
+One further option remains untested.  The code plans every transform with
+\texttt{FFTW\_ESTIMATE}, which picks a plan heuristically.  \texttt{FFTW\_MEASURE} times
+candidate plans and keeps the fastest, at the price of a slower one-time planning step,
+and a saved wisdom file pays that price only once across runs \citep{frigo2005design}.
+The gain is bounded, though: the inverse FFT is about $8\,\mu$s of a
+$\approx 70\,\mu$s path at $N = 1000$ (§\ref{sec:timing}).

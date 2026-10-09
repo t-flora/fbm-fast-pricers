@@ -17,8 +17,11 @@
 //   5. log_vol = cumsum(x[0..N-1])  → fBM path; then simulate GBM prices
 
 #include <fftw3.h>
+#include <Eigen/Dense>
+#include <algorithm>
 #include <chrono>
 #include <complex>
+#include <memory>
 #include <random>
 #include <vector>
 #include <cmath>
@@ -27,6 +30,7 @@
 #include "common/asian_payoff.hpp"
 #include "common/rng.hpp"
 #include "common/control_variate.hpp"
+#include "common/batched_mc.hpp"
 
 namespace fft_pricer {
 
@@ -196,6 +200,84 @@ inline CVResult price_cv(int N, int M_paths, unsigned seed = 42) {
         }
     };
     CVResult res = mc_control_variate(next_path, N, M_paths, seed);
+    res.t_construct = t_construct;
+    return res;
+}
+
+// Batched worker (common/batched_mc.hpp): ceil(B/2) inverse FFTs per block in one
+// fftw_plan_many_dft call; the real and imaginary part of each give two paths, as in
+// FbmSampler::sample_pair. Construct on one thread at a time (FFTW planning is not
+// thread-safe); log_vol() may then run concurrently on different workers.
+class BatchWorker {
+public:
+    BatchWorker(const std::vector<double>& scale, int batch)
+        : N_(static_cast<int>(scale.size()) / 2), M_(static_cast<int>(scale.size())),
+          howmany_((std::max(1, batch) + 1) / 2), scale_(scale)
+    {
+        const size_t len = static_cast<size_t>(M_) * howmany_;
+        in_ = fftw_alloc_complex(len);
+        out_ = fftw_alloc_complex(len);
+        plan_ = fftw_plan_many_dft(1, &M_, howmany_, in_, nullptr, 1, M_,
+                                   out_, nullptr, 1, M_, FFTW_BACKWARD, FFTW_ESTIMATE);
+    }
+    ~BatchWorker() {
+        fftw_destroy_plan(plan_);
+        fftw_free(in_);
+        fftw_free(out_);
+    }
+    BatchWorker(const BatchWorker&) = delete;
+    BatchWorker& operator=(const BatchWorker&) = delete;
+
+    template <class Src>
+    void log_vol(Src& src, int n, Eigen::MatrixXd& LV) {
+        const int pairs = (n + 1) / 2;
+        for (int t = 0; t < pairs; ++t) {
+            fftw_complex* w = in_ + static_cast<size_t>(t) * M_;
+            src.fill(&w[0][0], 2 * M_);  // (a_j, b_j) interleaved
+            for (int j = 0; j < M_; ++j) {
+                w[j][0] *= scale_[j];
+                w[j][1] *= scale_[j];
+            }
+        }
+        fftw_execute(plan_);  // transforms past `pairs` (last block only) are discarded
+        for (int t = 0; t < pairs; ++t) {
+            const fftw_complex* x = out_ + static_cast<size_t>(t) * M_;
+            for (int part = 0; part < 2 && 2 * t + part < n; ++part) {
+                double* path = LV.col(2 * t + part).data();
+                double acc = 0.0;
+                for (int j = 0; j < N_; ++j) {
+                    acc += x[j][part];
+                    path[j] = params::nu * acc;
+                }
+            }
+        }
+    }
+
+private:
+    int N_, M_, howmany_;
+    const std::vector<double>& scale_;
+    fftw_complex *in_, *out_;
+    fftw_plan plan_;
+};
+
+// sqrt(lambda_j / 2N): the per-frequency scaling of FbmSampler
+inline std::vector<double> circulant_scale(int N, double H, double dt) {
+    std::vector<double> lam = circulant_eigenvalues(N, H, dt), scale(2 * N);
+    for (int j = 0; j < 2 * N; ++j) scale[j] = std::sqrt(std::max(lam[j], 0.0) / (2 * N));
+    return scale;
+}
+
+// Batched FFT pricer. cfg.batch counts paths; batch = 2 is one transform per block, the
+// unbatched pairing of price_timed().
+inline batched::Result price_batched(int N, int M_paths, const batched::Config& cfg = {},
+                                     unsigned seed = 42) {
+    using Clock = std::chrono::high_resolution_clock;
+    auto t0 = Clock::now();
+    const std::vector<double> scale = circulant_scale(N, params::H, params::T / N);
+    double t_construct = std::chrono::duration<double>(Clock::now() - t0).count();
+    batched::Result res = batched::run(N, M_paths, seed, cfg, [&] {
+        return std::make_unique<BatchWorker>(scale, cfg.batch);
+    });
     res.t_construct = t_construct;
     return res;
 }

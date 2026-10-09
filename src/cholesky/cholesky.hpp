@@ -2,13 +2,16 @@
 // Block 2: Dense Cholesky path generator.
 // O(N^3) factorization once (N^3/3 flops); O(N^2) per path (N^2 flops, triangular).
 #include <Eigen/Dense>
+#include <algorithm>
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 #include "common/params.hpp"
 #include "common/covariance.hpp"
 #include "common/asian_payoff.hpp"
 #include "common/rng.hpp"
 #include "common/control_variate.hpp"
+#include "common/batched_mc.hpp"
 
 namespace cholesky {
 
@@ -76,6 +79,42 @@ inline CVResult price_cv(int N, int M_paths, unsigned seed = 42) {
         for (int i = 0; i < N; ++i) log_vol[i] = nu * lv(i);
     };
     CVResult res = mc_control_variate(next_path, N, M_paths, seed);
+    res.t_construct = t_construct;
+    return res;
+}
+
+// Batched worker (common/batched_mc.hpp): one triangular matrix-matrix product L Z per
+// block, which reads L once per B paths. A block of one path uses the mat-vec instead.
+class BatchWorker {
+public:
+    BatchWorker(const Eigen::MatrixXd& F, int batch) : F_(F), Z_(F.rows(), batch) {}
+
+    template <class Src>
+    void log_vol(Src& src, int n, Eigen::MatrixXd& LV) {
+        const int N = F_.rows();
+        src.fill(Z_.data(), N * n);
+        auto L = F_.triangularView<Eigen::Lower>();
+        if (n == 1)
+            LV.col(0).noalias() = L * Z_.col(0);
+        else
+            LV.leftCols(n).noalias() = L * Z_.leftCols(n);
+        LV.leftCols(n) *= params::nu;
+    }
+
+private:
+    const Eigen::MatrixXd& F_;
+    Eigen::MatrixXd Z_;
+};
+
+inline batched::Result price_batched(int N, int M_paths, const batched::Config& cfg = {},
+                                     unsigned seed = 42) {
+    using Clock = std::chrono::high_resolution_clock;
+    auto t0 = Clock::now();
+    const Eigen::MatrixXd F = fbm_cholesky_factor(N, params::H, params::T);
+    double t_construct = std::chrono::duration<double>(Clock::now() - t0).count();
+    batched::Result res = batched::run(N, M_paths, seed, cfg, [&] {
+        return std::make_unique<BatchWorker>(F, std::max(1, cfg.batch));
+    });
     res.t_construct = t_construct;
     return res;
 }

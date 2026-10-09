@@ -6,6 +6,10 @@ Sweeps RFSV model parameters to show how Asian call prices depend on:
   - vol-of-vol nu
   - Strike K (moneyness)
 
+Every price uses the conditional geometric control variate (price_asian_call_cv)
+and the same seed (common random numbers); the printed and plotted standard errors
+are those of the CV estimate.
+
 Figures produced:
   1. sensitivity_surface.png -- 2-panel: heatmap price vs (H, nu) at ATM, and
      line plot price vs H for each nu.
@@ -38,7 +42,7 @@ Why does price increase as H decreases?
 
 Why does price increase with nu?
 
-  nu = vol-of-vol.  Larger nu => sigma_t varies more around its mean of 1.0.
+  nu = vol-of-vol.  Larger nu => sigma_t varies more around its base level sigma_0.
   Again by Jensen's inequality, more stochastic vol => higher option price.
   The effect is symmetric: nu enters as exp(nu * W), so doubling nu does not
   double the price, it amplifies in a nonlinear way.
@@ -62,9 +66,21 @@ The viridis colormap:
   arbitrary color assignment with confusing connotations of risk).  Viridis is
   perceptually uniform and colorblind-friendly.
 
-Contested point: this script computes O(H * nu * K) = 6 * 4 + 6 * 5 = 54 MC runs
-  at M=10000 paths each.  At ~0.2s per run (N=252, FFT Python engine), the total
-  runtime is ~11 seconds.  This is manageable but limits the grid resolution.
+The control variate and the standard errors:
+
+  price_asian_call_cv subtracts beta (Y - E[Y | sigma]), with Y the geometric-average
+  payoff and E[Y | sigma] its closed form given the vol path; beta comes from a
+  separate pilot run, so every cell is exactly unbiased.  It cancels the price-shock
+  noise and cuts the variance 26-56x at nu = 0.52 (printed at the end), so the
+  absolute SE of a cell at M = 10,000 is ~0.02 instead of ~0.1.  Cell-to-cell
+  differences are more precise still, because all cells share their random numbers.
+  The variance reduction shrinks as nu grows, since the control does not touch the
+  volatility-path noise, which is a larger part of the total at high vol-of-vol.
+
+Contested point: this script computes 6 * 4 = 24 heatmap runs plus 6 strike sweeps
+  (all five strikes priced from one path set per H), at M=10000 paths each plus a
+  2,000-path pilot.  At ~0.3s per run (N=252, FFT Python engine), the total
+  runtime is ~10 seconds.  This is manageable but limits the grid resolution.
   For a finer grid, the C++ benchmark should be used.
 """
 
@@ -77,7 +93,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from data.rfsv_model import price_asian_call
+from data.rfsv_model import price_asian_call_cv
 from data.params import NU, S0, T, R
 
 sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
@@ -92,8 +108,10 @@ SEED = 42
 
 
 def run_grid(H_grid, nu_grid, K_atm, N, M):
-    """Compute price grid over H × nu at fixed K."""
+    """Compute CV price, CV SE and plain SE grids over H × nu at fixed K."""
     grid = np.zeros((len(H_grid), len(nu_grid)))
+    se = np.zeros_like(grid)
+    se_plain = np.zeros_like(grid)
     total = len(H_grid) * len(nu_grid)
     count = 0
     for i, H in enumerate(H_grid):
@@ -103,33 +121,32 @@ def run_grid(H_grid, nu_grid, K_atm, N, M):
                 warnings.simplefilter("ignore")
                 # Common random numbers: every cell reuses the same Gaussian draws, so
                 # cell-to-cell differences reflect (H, nu), not independent MC noise
-                grid[i, j] = price_asian_call(H=H, nu=nu, K=K_atm, T=T, S0=S0, r=R,
-                                              N=N, M=M, seed=SEED)
-            print(f"  [{count}/{total}] H={H:.2f}  nu={nu:.2f}  price={grid[i,j]:.3f}")
-    return grid
+                res = price_asian_call_cv(H=H, nu=nu, K=K_atm, T=T, S0=S0, r=R,
+                                          N=N, M=M, seed=SEED)
+            grid[i, j], se[i, j], se_plain[i, j] = res["price"], res["se"], res["se_plain"]
+            print(f"  [{count}/{total}] H={H:.2f}  nu={nu:.2f}  "
+                  f"price={grid[i,j]:.3f} ± {se[i,j]:.3f}")
+    return grid, se, se_plain
 
 
 def run_strike_sweep(H_grid, nu_fixed, K_grid, N, M):
-    """Compute price vs K for each H value at fixed nu."""
-    results = {}
-    for i, H in enumerate(H_grid):
-        prices = []
-        for j, K in enumerate(K_grid):
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                p = price_asian_call(H=H, nu=nu_fixed, K=K, T=T, S0=S0, r=R,
-                                     N=N, M=M, seed=SEED)  # common random numbers
-            prices.append(p)
-        results[H] = np.array(prices)
-    return results
+    """CV price and SE vs K for each H value at fixed nu (all strikes on one path set)."""
+    results, ses = {}, {}
+    for H in H_grid:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = price_asian_call_cv(H=H, nu=nu_fixed, K=K_grid, T=T, S0=S0, r=R,
+                                      N=N, M=M, seed=SEED)  # common random numbers
+        results[H], ses[H] = res["price"], res["se"]
+    return results, ses
 
 
-def plot_surface(H_grid, nu_grid, price_grid, out_path, M):
+def plot_surface(H_grid, nu_grid, price_grid, se_grid, out_path, M):
     fig, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
     fig.text(
         0.5, 1.01,
-        f"ATM sensitivity  (K=S0=100, T=1yr, M={M:,} paths — MC std err "
-        f"approx {35.0 / (M ** 0.5):.1f})",
+        f"ATM sensitivity  (K=S0=100, T=1yr, M={M:,} paths, control variate — "
+        f"std err {se_grid.min():.3f} to {se_grid.max():.3f})",
         ha="center", fontsize=10, style="italic",
     )
 
@@ -142,7 +159,7 @@ def plot_surface(H_grid, nu_grid, price_grid, out_path, M):
         index=[f"{h:.2f}" for h in H_grid],
         columns=[f"{n:.2f}" for n in nu_grid],
     )
-    sns.heatmap(df_heat, ax=ax, annot=True, fmt=".1f", cmap="viridis",
+    sns.heatmap(df_heat, ax=ax, annot=True, fmt=".2f", cmap="viridis",
                 cbar_kws={"label": "Asian call price"},
                 linewidths=0.4, linecolor="white")
     ax.set_xlabel(r"Vol-of-vol  $\nu$")
@@ -161,20 +178,21 @@ def plot_surface(H_grid, nu_grid, price_grid, out_path, M):
     colors = [cmap(x) for x in np.linspace(0.2, 0.85, len(nu_grid))]
     for nu_val, color in zip(nu_grid, colors):
         nu_idx = list(nu_grid).index(nu_val)
-        ax2.plot(H_grid, price_grid[:, nu_idx], marker="o", linewidth=2,
-                 markersize=6, color=color, label=f"$\\nu$={nu_val:.2f}")
+        ax2.errorbar(H_grid, price_grid[:, nu_idx], yerr=se_grid[:, nu_idx], marker="o",
+                     linewidth=2, markersize=6, capsize=2, color=color,
+                     label=f"$\\nu$={nu_val:.2f}")
 
     ax2.set_xlabel("Hurst exponent H")
     ax2.set_ylabel("Asian call price")
     ax2.set_title("Price vs roughness H\n(for each vol-of-vol nu)")
     ax2.legend(fontsize=9, title=r"$\nu$")
 
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")  # keep the fig.text header (y > 1)
     print(f"  Saved: {out_path}")
     plt.close()
 
 
-def plot_strike_sensitivity(H_grid, K_grid, results, nu_fixed, out_path):
+def plot_strike_sensitivity(H_grid, K_grid, results, ses, nu_fixed, out_path):
     fig, ax = plt.subplots(figsize=(9, 5), constrained_layout=True)
 
     # viridis: rough (low H) = dark purple, smooth (high H) = yellow — intuitive
@@ -191,8 +209,8 @@ def plot_strike_sensitivity(H_grid, K_grid, results, nu_fixed, out_path):
             label += "*"
         elif H == 0.50:
             label += " (Brownian)"
-        ax.plot(K_grid, results[H], marker="o", linewidth=2, markersize=6,
-                color=color, label=label)
+        ax.errorbar(K_grid, results[H], yerr=ses[H], marker="o", linewidth=2,
+                    markersize=6, capsize=2, color=color, label=label)
 
     ax.axvline(S0, color="gray", linestyle=":", linewidth=1.2, alpha=0.7,
                label=f"ATM  K={S0:.0f}")
@@ -200,7 +218,8 @@ def plot_strike_sensitivity(H_grid, K_grid, results, nu_fixed, out_path):
     ax.set_ylabel("Asian call price")
     ax.set_title(
         f"Asian call price vs strike for varying H\n"
-        f"($\\nu$={nu_fixed:.2f}, S0={S0:.0f}, T={T:.0f}yr;  * = calibrated)"
+        f"($\\nu$={nu_fixed:.2f}, S0={S0:.0f}, T={T:.0f}yr;  * = calibrated;  "
+        f"control variate, SE $\\leq$ {max(s.max() for s in ses.values()):.3f})"
     )
     ax.set_ylim(y_lo, y_hi)
     ax.legend(fontsize=9, loc="upper right")
@@ -224,23 +243,23 @@ def main():
 
     # ── Surface: H × nu at K=ATM ─────────────────────────────────────────────
     print(f"Computing H × nu price grid (K=ATM=100, M={args.M}, N={args.N}) ...")
-    price_grid = run_grid(H_GRID, NU_GRID, K_atm=S0, N=args.N, M=args.M)
+    price_grid, se_grid, se_plain_grid = run_grid(H_GRID, NU_GRID, K_atm=S0, N=args.N, M=args.M)
 
     print("\nPlotting surface ...")
-    plot_surface(H_GRID, NU_GRID, price_grid,
+    plot_surface(H_GRID, NU_GRID, price_grid, se_grid,
                  os.path.join(out_dir, "sensitivity_surface.png"), M=args.M)
 
     # ── Strike sweep: K × H at the model nu ─────────────────────────────────
     NU_FIXED = NU
     print(f"\nComputing K × H sweep (nu={NU_FIXED}, M={args.M}, N={args.N}) ...")
-    strike_results = run_strike_sweep(H_GRID, NU_FIXED, K_GRID, args.N, args.M)
+    strike_results, strike_ses = run_strike_sweep(H_GRID, NU_FIXED, K_GRID, args.N, args.M)
 
     print("\nPlotting strike sensitivity ...")
-    plot_strike_sensitivity(H_GRID, K_GRID, strike_results, NU_FIXED,
+    plot_strike_sensitivity(H_GRID, K_GRID, strike_results, strike_ses, NU_FIXED,
                             os.path.join(out_dir, "sensitivity_strike.png"))
 
     # Print summary
-    print("\nH × nu price grid (K=ATM):")
+    print("\nH × nu price grid (K=ATM), control variate:")
     print(f"  {'H\\nu':>6}", end="")
     for nu in NU_GRID:
         print(f"  {nu:>8.2f}", end="")
@@ -250,6 +269,12 @@ def main():
         for j in range(len(NU_GRID)):
             print(f"  {price_grid[i, j]:>8.3f}", end="")
         print()
+    print(f"  CV std err: {se_grid.min():.4f} to {se_grid.max():.4f}  "
+          f"(plain MC on the same paths: {se_plain_grid.min():.4f} to {se_plain_grid.max():.4f})")
+    vr = (se_plain_grid / se_grid) ** 2
+    print("  Variance reduction (plain / CV variance) by nu: "
+          + "  ".join(f"nu={nu:.2f}: {vr[:, j].min():.0f}-{vr[:, j].max():.0f}x"
+                      for j, nu in enumerate(NU_GRID)))
 
 
 if __name__ == "__main__":

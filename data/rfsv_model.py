@@ -7,6 +7,10 @@ Matches the C++ FFTW circulant-embedding convention exactly:
   - increments = Re(IFFT(W) * 2N)[:N]  [multiply 2N to undo numpy's 1/(2N)]
   - log_vol = nu * cumsum(increments)   → fBM paths
 
+Also: the approximate global low-rank (rSVD) sampler, optionally variance-corrected
+(simulate_log_vol_paths_lowrank, mirroring src/rsvd/lowrank.hpp), and the conditional
+geometric control variate (price_asian_call_cv), which accepts any path sampler.
+
 Usage:
     from data.rfsv_model import price_asian_call, price_european_call, bs_implied_vol
 """
@@ -68,6 +72,106 @@ def simulate_log_vol_paths(N: int, M: int, H: float, nu: float,
     return log_vol
 
 
+# ── fBM covariance and the low-rank (rSVD) sampler ──────────────────────────
+
+def fbm_cov_matrix(N: int, H: float, T: float = 1.0) -> np.ndarray:
+    """Dense fBM covariance C_ij = (t_i^{2H} + t_j^{2H} - |t_i - t_j|^{2H}) / 2 on t_j = j T / N."""
+    dt = T / N
+    t  = np.arange(1, N + 1) * dt
+    ti, tj = t[:, None], t[None, :]
+    return 0.5 * (ti ** (2 * H) + tj ** (2 * H) - np.abs(ti - tj) ** (2 * H))
+
+
+def rsvd(A: np.ndarray, k: int, p: int = 5, q: int = 2,
+         seed: int = 42) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Halko-Martinsson-Tropp Algorithm 4.4 (randomized subspace iteration).
+
+    Returns U (m x k), S (k,) such that A ≈ U * diag(S) * U^T for symmetric A.
+    The third return value is None (Vt not needed here; symmetric => Vt = U^T).
+
+    How it works:
+      Stage A: random sketch Y = A @ Omega captures the k dominant column directions.
+      Power iterations Y = (A A^T)^q @ Y amplify the signal-to-noise ratio by
+      raising singular values to the power 2q+1, separating large from small.
+      Re-orthonormalizing after every product keeps the small directions from
+      being lost to round-off (sigma_1/sigma_k raised to 2q+1 can reach 1e15).
+      Q is an orthonormal basis for the range of (A A^T)^q A.
+      Stage B: project A onto Q to get a small (k+p) x n matrix B.
+      SVD of B is cheap (O((k+p)^2 * n)); rotate back via Q to get U.
+    """
+    rng      = np.random.default_rng(seed)
+    _m, n  = A.shape
+    l     = k + p  # oversampled rank (p=5 reduces failure probability to near zero)
+    Omega = rng.standard_normal((n, l))
+    Q, _  = np.linalg.qr(A @ Omega)  # sketch: N x l  (captures top-l column directions)
+    for _ in range(q):
+        # Power iteration with QR after each product: range of (A A^T)^q A
+        W, _ = np.linalg.qr(A.T @ Q)
+        Q, _ = np.linalg.qr(A @ W)
+    B    = Q.T @ A            # project: cheap (k+p) x n matrix
+    U_b, S, _ = np.linalg.svd(B, full_matrices=False)
+    U    = Q @ U_b            # rotate U back into the original N-dimensional space
+    return U[:, :k], S[:k], None
+
+
+def lowrank_factor(C: np.ndarray, rank_k: int, seed: int = 42) -> np.ndarray:
+    """
+    Approximate factor L_k = U diag(sqrt(max(S, 0)))  (N x k)  with L_k L_k^T ≈ C,
+    from rSVD with oversampling 5 and 2 power iterations.  Mirrors lowrank_factor()
+    in src/rsvd/lowrank.hpp.
+    """
+    k = min(rank_k, C.shape[0])
+    U, S, _ = rsvd(C, k, p=5, q=2, seed=seed)
+    return U * np.sqrt(np.maximum(S, 0.0))
+
+
+def residual_sd(C: np.ndarray, Lk: np.ndarray) -> np.ndarray:
+    """
+    Variance correction: d_j = sqrt(max(C_jj - (L_k L_k^T)_jj, 0)), the per-step standard
+    deviation of the variance the rank-k factor misses.  Adding independent N(0, d_j^2)
+    noise at step j restores every marginal variance exactly; off-diagonal covariances
+    stay those of L_k L_k^T.  Mirrors residual_sd() in src/rsvd/lowrank.hpp.
+    """
+    return np.sqrt(np.maximum(np.diag(C) - (Lk ** 2).sum(axis=1), 0.0))
+
+
+def lowrank_sampler(N: int, H: float, nu: float, dt: float, rank_k: int,
+                    corrected: bool = False, factor_seed: int = 42):
+    """
+    Build the rank-k factor once and return sampler(M, seed) -> (M, N) log-vol paths
+    nu * (L_k z + d ⊙ eps), with d = 0 unless corrected.  The factor depends only on
+    factor_seed, so runs with different path seeds share one sampler (as in C++, where
+    the rSVD sketch has its own RNG).  The correction draws eps after z from the same
+    stream default_rng(seed), so uncorrected paths are unchanged by the option.
+    """
+    C = fbm_cov_matrix(N, H, T=N * dt)          # grid {dt, 2dt, ..., N dt}
+    Lk = lowrank_factor(C, rank_k, seed=factor_seed)
+    d = residual_sd(C, Lk) if corrected else None
+
+    def sample(M: int, seed: int = 42) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        z = rng.standard_normal((M, Lk.shape[1]))
+        x = z @ Lk.T                             # (M, N), O(N k) per path
+        if d is not None:
+            x += d * rng.standard_normal((M, N))
+        return nu * x
+
+    return sample
+
+
+def simulate_log_vol_paths_lowrank(N: int, M: int, H: float, nu: float, dt: float,
+                                   rank_k: int, seed: int = 42,
+                                   corrected: bool = False) -> np.ndarray:
+    """
+    Approximate fBM log-vol paths from the global rank-k rSVD factor, shape (M, N) like
+    simulate_log_vol_paths.  Plain paths have covariance nu^2 L_k L_k^T and lose the
+    truncated variance; corrected=True restores the marginal variances (diag(nu^2 C)),
+    the Python equivalent of lowrank::price_corrected / price_cv(..., corrected=true).
+    """
+    return lowrank_sampler(N, H, nu, dt, rank_k, corrected=corrected)(M, seed)
+
+
 # ── Price path simulation ────────────────────────────────────────────────────
 
 def _simulate_price_paths(log_vol: np.ndarray, S0: float, r: float,
@@ -120,21 +224,25 @@ def asian_cv_terms(log_vol: np.ndarray, S0: float, r: float, dt: float, K: float
     (V, Y, EY): the arithmetic payoff, the geometric payoff, and its closed-form
     conditional expectation E[Y | sigma], all undiscounted.  The price shocks use the
     same stream as _simulate_price_paths(seed=seed), so V matches price_asian_call.
+    K may be a scalar (each output has shape (M,)) or an array of strikes priced on the
+    same paths (each output has shape (M,) + K.shape).
 
     With rho = 0, log G = log S0 + sum_j w_j [(r - sigma_j^2/2) dt + sigma_j sqrt(dt) Z_j],
     w_j = (N - j) / N, is Gaussian given sigma with mean m and variance v below, so
     E[(G - K)^+ | sigma] = e^{m + v/2} Phi(d1) - K Phi(d1 - sqrt v).
     """
     M, N = log_vol.shape
+    K = np.asarray(K, dtype=float)
+    col = (slice(None),) + (None,) * K.ndim      # per-path scalar -> broadcast over K
     sigma = np.exp(log_vol)
     Z = np.random.default_rng([seed, 1]).standard_normal((M, N))
     drift = (r - 0.5 * sigma ** 2) * dt
     log_S = np.log(S0) + np.cumsum(drift + sigma * np.sqrt(dt) * Z, axis=1)
-    V = np.maximum(np.exp(log_S).mean(axis=1) - K, 0.0)
-    Y = np.maximum(np.exp(log_S.mean(axis=1)) - K, 0.0)
+    V = np.maximum(np.exp(log_S).mean(axis=1)[col] - K, 0.0)
+    Y = np.maximum(np.exp(log_S.mean(axis=1))[col] - K, 0.0)
     w = (N - np.arange(N)) / N
-    m = np.log(S0) + (w * drift).sum(axis=1)
-    v = dt * (w ** 2 * sigma ** 2).sum(axis=1)
+    m = (np.log(S0) + (w * drift).sum(axis=1))[col]
+    v = (dt * (w ** 2 * sigma ** 2).sum(axis=1))[col]
     sd = np.sqrt(v)
     d1 = (m - np.log(K) + v) / sd
     EY = np.exp(m + 0.5 * v) * sp_norm.cdf(d1) - K * sp_norm.cdf(d1 - sd)
@@ -144,7 +252,8 @@ def asian_cv_terms(log_vol: np.ndarray, S0: float, r: float, dt: float, K: float
 def price_asian_call_cv(H: float, nu: float, K: float, T: float = 1.0,
                         S0: float = 100.0, r: float = 0.0,
                         N: int = 252, M: int = 10000, seed: int = 42,
-                        mu0: float = MU0, pilot_M: int | None = None) -> dict:
+                        mu0: float = MU0, pilot_M: int | None = None,
+                        sampler=None, return_samples: bool = False) -> dict:
     """
     Arithmetic Asian call with the conditional geometric control variate.
 
@@ -152,23 +261,49 @@ def price_asian_call_cv(H: float, nu: float, K: float, T: float = 1.0,
     estimated on a separate pilot run (so the estimate is exactly unbiased).
     Returns dict(price, se, price_plain, se_plain, beta); price_plain uses the same
     paths as price_asian_call(..., seed=seed).
+
+    K: a strike, or an array of strikes all priced from the same paths (beta is then
+       estimated per strike and every entry of the result is an array over K).
+    sampler: optional callable sampler(n_paths, seed) -> (n_paths, N) array of
+       nu * W^H on the grid {dt, ..., N dt} (mu0 not added), e.g. lowrank_sampler(...).
+       It replaces the exact FFT sampler; H and nu are then unused.
+    return_samples: also return the per-path discounted estimates, "samples" (CV) and
+       "samples_plain", shape (M,) + K.shape.  Two runs with the same seed share their
+       random numbers path by path, so the SE of a price difference (a Greek, a premium)
+       is the std of the per-path differences over sqrt(M).
     """
     dt = T / N
     disc = np.exp(-r * T)
     pilot_M = pilot_M or max(2000, M // 10)
+    if sampler is None:
+        def sampler(n, s):
+            return simulate_log_vol_paths(N, n, H, nu, dt, seed=s)
 
     def terms(n, s):
-        log_vol = simulate_log_vol_paths(N, n, H, nu, dt, seed=s) + mu0
+        log_vol = sampler(n, s) + mu0
         V, Y, EY = asian_cv_terms(log_vol, S0, r, dt, K, seed=s)
         return V, Y - EY
 
     Vp, Cp = terms(pilot_M, seed + 1_000_003)
-    beta = np.cov(Vp, Cp)[0, 1] / Cp.var(ddof=1)
+    if np.ndim(K) == 0:
+        beta = np.cov(Vp, Cp)[0, 1] / Cp.var(ddof=1)
+    else:  # one beta per strike (columnwise covariance)
+        beta = ((Vp - Vp.mean(axis=0)) * (Cp - Cp.mean(axis=0))).sum(axis=0) / (pilot_M - 1)
+        beta = beta / Cp.var(axis=0, ddof=1)
     V, C = terms(M, seed)
     est = V - beta * C
-    return dict(price=float(disc * est.mean()), se=float(disc * est.std(ddof=1) / np.sqrt(M)),
-                price_plain=float(disc * V.mean()), se_plain=float(disc * V.std(ddof=1) / np.sqrt(M)),
-                beta=float(beta))
+
+    def out(x):
+        return float(x) if np.ndim(x) == 0 else x
+
+    res = dict(price=out(disc * est.mean(axis=0)),
+               se=out(disc * est.std(axis=0, ddof=1) / np.sqrt(M)),
+               price_plain=out(disc * V.mean(axis=0)),
+               se_plain=out(disc * V.std(axis=0, ddof=1) / np.sqrt(M)),
+               beta=out(beta))
+    if return_samples:
+        res.update(samples=disc * est, samples_plain=disc * V)
+    return res
 
 
 def price_european_call(H: float, nu: float, K: float, T: float = 1.0,

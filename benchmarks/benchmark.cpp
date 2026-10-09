@@ -17,6 +17,10 @@
 //   benchmarks/results/time_vs_N.csv
 //   benchmarks/results/error_vs_rank.csv
 //   benchmarks/results/reference_price.txt
+//
+// Usage: ./build/benchmark [--quick]
+//   --quick: N <= 500, one repeat, 50k-path reference, 10k paths per rank (about 10 s).
+//            For smoke tests only; it overwrites the same output files.
 
 #include <iostream>
 #include <iomanip>
@@ -36,11 +40,7 @@
 #include "rsvd/rsvd.hpp"
 #include "common/params.hpp"
 #include "common/covariance.hpp"
-
-using Clock = std::chrono::high_resolution_clock;
-static double elapsed_s(Clock::time_point t0) {
-    return std::chrono::duration<double>(Clock::now() - t0).count();
-}
+#include "timing.hpp"
 
 // Peak RSS (MB) of a forked child that runs f() and exits.
 template <class F>
@@ -66,17 +66,13 @@ static double measured_peak_mb(F f) {
 
 static constexpr int M_MEMORY = 100;  // paths per memory probe
 
-// Timings are the median of REPS repeats; every repeat uses the same seed, so the
-// price is identical and only the wall time varies.
-static constexpr int REPS = 3;
+// Timings are the median of REPS repeats (wall time = construction + MC), with the
+// interquartile range written alongside. Every repeat uses the same seed, so the price
+// is identical and only the wall time varies.
+static int REPS = 5;
 template <class F>
 static auto median_run(F f) {
-    std::vector<decltype(f())> runs;
-    for (int i = 0; i < REPS; ++i) runs.push_back(f());
-    std::sort(runs.begin(), runs.end(), [](const auto& a, const auto& b) {
-        return a.t_construct + a.t_mc < b.t_construct + b.t_mc;
-    });
-    return runs[REPS / 2];
+    return repeat_timed(REPS, f, [](const auto& r) { return r.t_construct + r.t_mc; });
 }
 
 // Largest on-chip cache on the test machine: Apple M2 performance-cluster L2 = 16 MB
@@ -85,17 +81,23 @@ static constexpr double L3_MB = 16.0;
 // M2 rated memory bandwidth (GB/s) — from Apple spec sheet.
 static constexpr double BANDWIDTH_GBS = 100.0;
 
-int main() {
+int main(int argc, char** argv) {
     using namespace params;
+    const bool quick = has_flag(argc, argv, "--quick");
+    make_results_dir();
+    if (quick) REPS = 1;
+    std::cout << "Mode: " << (quick ? "QUICK (smoke test)" : "FULL") << "\n";
 
     // 64x range in N: wide enough to see the log N factor, and N >= 2000 pushes the
     // Cholesky factor (8 N^2 bytes) out of the 16 MB L2
-    const std::vector<int> Ns    = {64, 128, N_SMALL, N_MEDIUM, N_LARGE, 2000, 4000};
+    const std::vector<int> Ns = quick ? std::vector<int>{64, 128, N_SMALL, N_MEDIUM}
+                                      : std::vector<int>{64, 128, N_SMALL, N_MEDIUM, N_LARGE, 2000, 4000};
     const std::vector<int> ranks = {2, 4, 8, 16, 32, 64, 128};
 
     std::ofstream csv_time("benchmarks/results/time_vs_N.csv");
     csv_time << "method,N,M_paths,wall_time_s,price,construction_time_s,mc_time_s,"
-                "measured_peak_mb,theoretical_peak_mb,cache_pressure,est_bandwidth_GBs\n";
+                "measured_peak_mb,theoretical_peak_mb,cache_pressure,est_bandwidth_GBs,"
+                "wall_time_q1_s,wall_time_q3_s\n";
 
     std::ofstream csv_err("benchmarks/results/error_vs_rank.csv");
     csv_err << "rank_k,N,reference_price,rsvd_price,abs_price_error,"
@@ -106,7 +108,8 @@ int main() {
         std::cout << "\n── N = " << N << " (M=" << M_PATHS << " paths) ──\n";
 
         // Cholesky: C is factored in place, so one N x N matrix (N^2 doubles) holds L
-        auto rc = median_run([N] { return cholesky::price_timed(N, M_PATHS); });
+        auto rc_rep = median_run([N] { return cholesky::price_timed(N, M_PATHS); });
+        const auto& rc = rc_rep.median;
         double peak_chol = measured_peak_mb([N] { cholesky::price_timed(N, M_MEMORY); });
         double t_chol = rc.t_construct + rc.t_mc;
         double theory_chol_mb = static_cast<double>(N) * N * 8.0 / (1024.0 * 1024.0);
@@ -118,14 +121,16 @@ int main() {
         csv_time << "cholesky," << N << "," << M_PATHS << "," << t_chol << "," << rc.price
                  << "," << rc.t_construct << "," << rc.t_mc << ","
                  << peak_chol << "," << theory_chol_mb << ","
-                 << cache_chol << "," << bw_chol << "\n";
+                 << cache_chol << "," << bw_chol << ","
+                 << rc_rep.q1 << "," << rc_rep.q3 << "\n";
         std::cout << "  cholesky : price=" << rc.price << "  time=" << t_chol
                   << "s  theory=" << theory_chol_mb << " MB"
                   << "  bw_est=" << bw_chol << " GB/s\n";
 
         // FFT: during MC the sampler holds the 2N scale factors (doubles) and two 2N complex
         // buffers for the inverse FFT: 2N * (8 + 16 + 16) bytes
-        auto rf = median_run([N] { return fft_pricer::price_timed(N, M_PATHS); });
+        auto rf_rep = median_run([N] { return fft_pricer::price_timed(N, M_PATHS); });
+        const auto& rf = rf_rep.median;
         double peak_fft = measured_peak_mb([N] { fft_pricer::price_timed(N, M_MEMORY); });
         double t_fft = rf.t_construct + rf.t_mc;
         double theory_fft_mb = static_cast<double>(N) * 2 * 40.0 / (1024.0 * 1024.0);
@@ -134,13 +139,14 @@ int main() {
         csv_time << "fft," << N << "," << M_PATHS << "," << t_fft << "," << rf.price
                  << "," << rf.t_construct << "," << rf.t_mc << ","
                  << peak_fft << "," << theory_fft_mb << ","
-                 << cache_fft << ",\n";
+                 << cache_fft << ",," << rf_rep.q1 << "," << rf_rep.q3 << "\n";
         std::cout << "  fft      : price=" << rf.price << "  time=" << t_fft
                   << "s  theory=" << theory_fft_mb << " MB\n";
 
         // rSVD (C held): peak = N x N covariance matrix (O(N^2)) + Lk (N x k)
         constexpr int RANK_K = 32;
-        auto rh = median_run([N] { return lowrank::price_timed(N, M_PATHS, RANK_K); });
+        auto rh_rep = median_run([N] { return lowrank::price_timed(N, M_PATHS, RANK_K); });
+        const auto& rh = rh_rep.median;
         double peak_hmat = measured_peak_mb([N] { lowrank::price_timed(N, M_MEMORY, RANK_K); });
         double t_hmat = rh.t_construct + rh.t_mc;
         double theory_hmat_mb = static_cast<double>(N) * N * 8.0 / (1024.0 * 1024.0);
@@ -149,12 +155,13 @@ int main() {
         csv_time << "rsvd," << N << "," << M_PATHS << "," << t_hmat << "," << rh.price
                  << "," << rh.t_construct << "," << rh.t_mc << ","
                  << peak_hmat << "," << theory_hmat_mb << ","
-                 << cache_hmat << ",\n";
+                 << cache_hmat << ",," << rh_rep.q1 << "," << rh_rep.q3 << "\n";
         std::cout << "  rsvd     : price=" << rh.price << "  time=" << t_hmat
                   << "s  theory=" << theory_hmat_mb << " MB\n";
 
         // rSVD (C freed before MC): peak during MC = Lk only (N x k)
-        auto rhf = median_run([N] { return lowrank::price_freed_timed(N, M_PATHS, RANK_K); });
+        auto rhf_rep = median_run([N] { return lowrank::price_freed_timed(N, M_PATHS, RANK_K); });
+        const auto& rhf = rhf_rep.median;
         double peak_hmat_f = measured_peak_mb([N] { lowrank::price_freed_timed(N, M_MEMORY, RANK_K); });
         double t_hmat_f = rhf.t_construct + rhf.t_mc;
         // After C freed: only Lk (N * k doubles) remains
@@ -164,13 +171,13 @@ int main() {
         csv_time << "rsvd_freed," << N << "," << M_PATHS << "," << t_hmat_f << ","
                  << rhf.price << "," << rhf.t_construct << "," << rhf.t_mc << ","
                  << peak_hmat_f << "," << theory_freed_mb << ","
-                 << cache_freed << ",\n";
+                 << cache_freed << ",," << rhf_rep.q1 << "," << rhf_rep.q3 << "\n";
         std::cout << "  rsvd_free: price=" << rhf.price << "  time=" << t_hmat_f
                   << "s  theory_mc=" << theory_freed_mb << " MB\n";
     }
 
     // ── High-accuracy reference (average of two exact simulators) ────────────
-    constexpr int M_REF = 500000;
+    const int M_REF = quick ? 50000 : 500000;
     std::cout << "\n── Computing reference price (N=" << N_MEDIUM
               << ", M=" << M_REF << " per method) ──\n";
 
@@ -188,7 +195,8 @@ int main() {
     std::cout << "  Reference (avg): " << p_ref << "\n";
     {
         std::ofstream f("benchmarks/results/reference_price.txt");
-        f << "# Reference price: average of two exact simulators\n"
+        f << "# Reference price: average of two exact simulators"
+          << (quick ? " (QUICK MODE: smoke test only)" : "") << "\n"
           << "# N=" << N_MEDIUM << ", M=" << M_REF << " paths each\n"
           << "p_cholesky=" << p_chol_ref << "\np_fft=" << p_fft_ref
           << "\nreference_price=" << p_ref << "\n";
@@ -201,7 +209,7 @@ int main() {
 
     // 100k paths per rank: with sigma_payoff ~ 9.5 the price SE is ~0.03, small enough
     // to resolve the truncation bias of the low-rank sampler
-    constexpr int M_ERR = 100000;
+    const int M_ERR = quick ? 10000 : 100000;
     std::cout << "\n── Error vs rank (N=" << N_MEDIUM << ", M=" << M_ERR << ") ──\n";
     std::cout << std::left << std::setw(8)  << "rank_k"
               << std::setw(12) << "frob_err%"

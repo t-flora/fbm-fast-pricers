@@ -152,12 +152,40 @@ plotext: |md
 
 extcsv -> plotext
 
+# ── Performance: batched sampling, fast generator, threads ───────────────────
+
+perf: |md
+## `performance.cpp`
+batched (B = 64) vs per-path, mt19937 vs ziggurat,
+thread scaling; via `batched_mc.hpp`, `fast_rng.hpp`
+| {shape: rectangle}
+
+cpp.alg1 -> perf
+cpp.alg2 -> perf
+cpp.alg3 -> perf
+
+perfcsv: |md
+## `perf_{breakdown,batched,`
+## `batch_size,threads}.csv`
+| {shape: cylinder}
+
+perf -> perfcsv
+
+plotperf: |md
+## `plot_performance.py`
+→ perf_breakdown.png, perf_batched.png
+→ perf_batch_size.png, perf_threads.png
+| {shape: rectangle}
+
+perfcsv -> plotperf
+
 # ── Tests & CI ────────────────────────────────────────────────────────────────
 
 tests: |md
 ## `tests/` + CI
 test_samplers.cpp (ctest), test_python.py (pytest)
-run on every push (Ubuntu + macOS)
+on pushes to main and PRs (Ubuntu gating, macOS informational);
+Ubuntu also runs `run_pipeline.sh --fast` and checks every figure
 | {shape: rectangle}
 
 cpp -> tests
@@ -192,20 +220,26 @@ RFSV IV smile vs live SPY chains
 
 asian: |md
 ## `validate_asian.py`
-→ validate_asian.png
-Lévy benchmark + roughness premium
+→ validate_asian.png, roughness_share.csv
+Lévy benchmark + roughness premium (3 normalizations)
 | {shape: rectangle}
 
 conv: |md
 ## `validate_convergence.py`
 → convergence.png
-price ±1σ vs M paths, confirm σ ∝ 1/√M
+price ±1σ vs M paths, plain and CV; σ ∝ 1/√M
 | {shape: rectangle}
 
 stab: |md
 ## `validate_stability.py`
 → stability_report.png
 FFT eigenvalue positivity, rSVD κ(Lₖ), Cholesky κ(C)
+| {shape: rectangle}
+
+greeks: |md
+## `greeks.py`
+→ greeks.png
+pathwise vs FD vega, dV/dH (control variate)
 | {shape: rectangle}
 
 mem: |md
@@ -224,3 +258,4 @@ py -> asian
 py -> conv
 py -> stab
 py -> mem
+py -> greeks

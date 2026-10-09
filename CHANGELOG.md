@@ -1,5 +1,48 @@
 # Changelog
 
+## Performance and polish, October 2026 (branch `feat/perf-and-polish`)
+
+Implements roadmap items 4–6 and most of item 11 in `TODO.md`. As before, the new methods are opt-in: `price()`, `price_timed()` and their `std::mt19937` streams are unchanged, so the main benchmark prices are identical to the last run. The timings were re-measured (five repeats, now with their interquartile range) and the report, README and CLAUDE.md quote the new values.
+
+### Added
+
+- **Batched, multithreaded pricers** (items 4 and 6). `price_batched(N, M, batched::Config{batch, threads, rng})` in all three samplers, with one driver, `src/common/batched_mc.hpp`, and a `BatchWorker` per sampler: a triangular product $LZ$ (Cholesky), a GEMM $L_k Z$ (low-rank), or one `fftw_plan_many_dft` call (FFT) per block of $B$ paths. Blocks are also the unit of thread work (`std::thread`; Apple Clang has no OpenMP). Block $b$ draws from a stream seeded by $(\text{seed}, b)$ and sums are reduced in block order, so prices are bitwise identical for any thread count.
+- **Fast Gaussian generator** (item 5). `src/common/fast_rng.hpp`: xoshiro256++ and a 256-layer ziggurat, 3.8 ns per normal against 15.2 ns for `std::mt19937` + `std::normal_distribution`.
+- **Performance benchmark** `benchmarks/performance.cpp` (per-path stage breakdown; four configurations vs $N$; block size; thread scaling) and `plots/plot_performance.py`. One thread, $B = 64$ and the fast generator against the original loop: Cholesky $2.2\times$ at $N = 64$ rising to $4.0\times$ at $N = 4000$, FFT $2.0$–$2.2\times$, rSVD $1.7$–$1.9\times$. At $N = 4000$ the per-path Cholesky loop gains at most $1.8\times$ from threads (it is bandwidth-bound) while the batched one reaches $4.1\times$.
+- **Greeks** (`data/greeks.py`): pathwise vega with a differentiated control variate, $2.900 \pm 0.035$, agrees with central finite differences under common random numbers; $\partial V/\partial H = -2.40 \pm 0.05$.
+- **Variance normalizations of the roughness premium** (`validate_asian.py`): the share that survives is 70%, 65% or 58% when the $H = 0.5$ model is matched on integrated variance, integrated log-variance, or ATM implied volatility. Written to `plots/figures/roughness_share.csv`.
+- **Variance-corrected low-rank sampler in Python**: `lowrank_sampler`, `simulate_log_vol_paths_lowrank`, `lowrank_factor`, `residual_sd` in `data/rfsv_model.py` (`fbm_cov_matrix` and `rsvd` moved there from `validate_stability.py`, which re-imports them). `price_asian_call_cv` accepts an array of strikes, a custom `sampler` and `return_samples=True`.
+- **Quick modes**: `--quick` for `benchmark`, `extensions` and `performance`; `./run_pipeline.sh --fast` now runs everything in about two minutes. New pipeline steps for the performance benchmark and the Greeks.
+- **CI smoke test**: a second job in `ci.yml` runs `./run_pipeline.sh --fast --no-iv` and checks that each of the 19 figures and the roughness-share CSV is written.
+- **Tests**: 10 new C++ checks (40 in total): xoshiro reference outputs; ziggurat moments, CDF and tail on $10^7$ draws; the allocation-free payoff equals the plain one bitwise; covariance of batched paths for all three samplers (including a partial FFT pair); thread-count invariance; batched prices against the plain pricers; a fixed-seed regression value (Apple Clang and GCC 16 agree to $10^{-15}$). Python: 27 tests, including the Oxford-Man loader on a synthetic CSV, the corrected low-rank sampler, and pathwise vs finite-difference vega.
+
+### Changed
+
+- **The validation scripts use the control variate.** `validate_asian.py` and `plot_sensitivity.py` price with `price_asian_call_cv` (cell standard errors 0.003–0.03 instead of $\approx 0.1$). `validate_convergence.py` shows plain and control-variate curves side by side; its same-grid reference is now $5.3217 \pm 0.0018$.
+- **Benchmark timing**: median of 5 repeats (was 3), with the interquartile range in new `wall_time_q1_s`, `wall_time_q3_s` columns of `time_vs_N.csv` and as error bars in `time_vs_N.png`. Shared helpers in `benchmarks/timing.hpp`.
+- **Report**: new subsections on batched sampling (7.3) and Greeks (7.4); the roughness-share table moves from future work into Section 6.2; Sections 5 and 6 updated to the new numbers; a GPU subsection in future work; all overfull boxes fixed (`\emergencystretch`).
+
+### Fixed
+
+- **Oxford-Man loader** (`calibrate.load_oxford_man`): converting the dates to UTC moved every date east of Greenwich back one day; it now keeps the exchange's local date. Zero RV values (log of zero) are now dropped.
+- **FFTW wisdom note in the report** said `FFTW_MEASURE` removes planning overhead; it adds planning time to find a faster plan.
+
+### Measurement notes
+
+- The development machine is a fanless MacBook Air M2. One attempt ran in macOS Low Power Mode on battery, which slowed every timing by about $1.8\times$; those results were discarded and everything was re-run on AC power.
+- The IQR column caught a disturbed run: Cholesky at $N = 4000$ took 33.9 s with a 34% IQR, against 19.7 s (0.4% IQR) in the re-run. Sustained back-to-back $N = 4000$ runs throttle by only about 8% after 40 s, so that run was an external disturbance.
+- `perf_threads.csv` comes from a run with the machine otherwise idle. A later repeat with a browser holding one core at 100% gave the same qualitative result with noisier curves.
+
+## CI hardening, October 2026 (branch `ci/macos-informational`)
+
+The first CI run on `main` after merging PR #2 showed a red X: the macOS job was cancelled after 15 minutes because GitHub never assigned it a runner ("not acquired by Runner", with a capacity notice for macOS arm64). No step ran, the Ubuntu job passed, and a re-run passed after several hours in the queue.
+
+- **Split CI into two workflows.** `ci.yml` (Ubuntu, GCC) is the gating check and the README badge. `ci-macos.yml` (macOS, Apple Clang) is informational: a separate workflow with `continue-on-error`, so a runner shortage or a macOS-only failure never turns the main CI status red. A failing macOS job is still visible.
+- **No more duplicate runs.** Both workflows run on pushes to `main` and on pull requests. Previously every commit on a PR branch ran CI twice (once for the push, once for the PR), which also doubled the load on the scarce macOS runners.
+- **`timeout-minutes: 20`** on both jobs (a normal run takes 1–2 minutes).
+- README, CLAUDE.md, TODO.md, the dataflow diagram and the report's testing section updated to match.
+
+
 ## Extensions and CI, October 2026 (branch `feat/variance-correction-and-cv`)
 
 Implements items 1–3 of the roadmap in `TODO.md` as *additional* methods. The existing pricers, the main benchmark CSVs, and the report's numbers are unchanged; the new methods are opt-in and measured by a separate program.
