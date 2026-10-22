@@ -1,0 +1,42 @@
+# Informational CI on macOS (Apple Clang, Homebrew), the development setup.
+#
+# Kept separate from the gating workflow (ci.yml) because GitHub's macOS arm64 runners
+# are capacity-constrained: a job can wait hours or be cancelled without ever running
+# ("not acquired by Runner"). As its own workflow, that only affects this status line,
+# never the main CI status or the README badge. continue-on-error additionally keeps a
+# genuine macOS test failure from failing the run; the failing job is still shown.
+name: CI (macOS, informational)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: macos-latest
+    runs-on: macos-latest
+    continue-on-error: true
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install C++ dependencies
+        run: brew install eigen fftw pkg-config
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: C++ tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Python tests
+        run: uv run --locked pytest tests/ -q

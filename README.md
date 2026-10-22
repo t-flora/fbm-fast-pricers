@@ -281,7 +281,7 @@ The yfinance proxy recovers $H$ close to the published $0.1$. Its $\nu$ is infla
 
 `TODO.md` has the full prioritized roadmap, with evidence, plans and done-when criteria. The top items:
 
-Items 1–3 of the roadmap are done: the two extensions above, and CI on every push (Ubuntu with GCC, macOS with Apple Clang). The top remaining items:
+Items 1–3 of the roadmap are done: the two extensions above, and CI on pushes to `main` and on pull requests (Ubuntu with GCC as the gating check, macOS with Apple Clang as an informational check). The top remaining items:
 
 1. **Performance:** batch paths into matrix-matrix products (Cholesky is bandwidth-bound at large $N$), use a faster Gaussian generator (it dominates the FFT per-path cost), and add multithreading.
 2. **A hierarchical (HODLR) sampler**, which exploits the rank-3 far-field blocks and works on non-uniform grids where the FFT cannot.
@@ -305,7 +305,8 @@ data/              params.py (shared model parameters), calibrate.py, rfsv_model
 plots/             plot_scaling.py, plot_structure.py, plot_sensitivity.py, plot_extensions.py;
                    figures/ (generated)
 experiments/       prototype_further_work.py (prototypes for roadmap items)
-.github/workflows/ ci.yml (build + both test suites on every push and pull request)
+.github/workflows/ ci.yml (Ubuntu, gating) and ci-macos.yml (macOS, informational): build +
+                   both test suites on pushes to main and on pull requests
 report-files/      LaTeX report (main.tex + sec*.tex)
 ALGORITHMS.md      Line-by-line walkthrough of the C++ samplers
 tests/             test_samplers.cpp (C++, via ctest) and test_python.py (pytest)

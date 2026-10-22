@@ -190,8 +190,9 @@ calls \texttt{price()} directly.
 
 Several results in earlier drafts of this report came from bugs that nothing
 checked, so both engines now have test suites that run in a few seconds, gate
-the benchmark pipeline, and run in continuous integration on every push (Ubuntu with
-GCC and macOS with Apple Clang).  The C++ suite (\texttt{tests/test\_samplers.cpp},
+the benchmark pipeline, and run in continuous integration on every pull request and
+push to the main branch (Ubuntu with GCC as the gating check, macOS with Apple Clang as
+an informational one).  The C++ suite (\texttt{tests/test\_samplers.cpp},
 30 checks)
 verifies that $LL^\top = C$ to $10^{-15}$; that every circulant eigenvalue minimum
 matches the closed form~\eqref{eq:lambda-min} to $10^{-8}$ for $H \in
