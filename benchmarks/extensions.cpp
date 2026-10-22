@@ -17,6 +17,10 @@
 // Outputs:
 //   benchmarks/results/variance_corrected_rank.csv
 //   benchmarks/results/control_variate.csv
+//
+// Usage: ./build/extensions [--quick]
+//   --quick: 10k paths and ranks {2, 8, 32} in (a), N = 252 with 5k paths in (b).
+//            For smoke tests only; it overwrites the same output files.
 
 #include <cmath>
 #include <cstdlib>
@@ -32,6 +36,7 @@
 #include "rsvd/lowrank.hpp"
 #include "common/params.hpp"
 #include "common/covariance.hpp"
+#include "timing.hpp"
 
 // Reference price written by ./build/benchmark (average of 500k Cholesky + 500k FFT paths)
 static double read_reference_price() {
@@ -59,12 +64,15 @@ static Structure structure_errors(const Eigen::MatrixXd& C, const Eigen::MatrixX
              var_err / N, lag1_err / (N - 1) };
 }
 
-int main() {
+int main(int argc, char** argv) {
     using namespace params;
+    const bool quick = has_flag(argc, argv, "--quick");
+    make_results_dir();
+    std::cout << "Mode: " << (quick ? "QUICK (smoke test)" : "FULL") << "\n";
 
     // ── (a) Variance-corrected low-rank sampler vs rank ─────────────────────
     {
-        const int N = N_MEDIUM, M = 100000;
+        const int N = N_MEDIUM, M = quick ? 10000 : 100000;
         const double p_ref = read_reference_price();
         Eigen::MatrixXd C = build_fbm_cov_matrix(N, H, T);
         std::ofstream csv("benchmarks/results/variance_corrected_rank.csv");
@@ -75,7 +83,7 @@ int main() {
                "plain_mc_time_s,corrected_mc_time_s\n";
         std::cout << "── (a) variance correction vs rank (N=" << N << ", M=" << M
                   << ", reference " << p_ref << ") ──\n";
-        for (int k : {2, 4, 8, 16, 32, 64, 128}) {
+        for (int k : quick ? std::vector<int>{2, 8, 32} : std::vector<int>{2, 4, 8, 16, 32, 64, 128}) {
             auto plain = lowrank::price_timed(N, M, k, /*seed=*/42);
             auto corr = lowrank::price_corrected_timed(N, M, k, /*seed=*/42);
             Eigen::MatrixXd Lk = lowrank::lowrank_factor(C, k, 42);
@@ -101,7 +109,7 @@ int main() {
 
     // ── (b) Control variate per sampler ─────────────────────────────────────
     {
-        const int M = M_PATHS, RANK_K = 32;
+        const int M = quick ? 5000 : M_PATHS, RANK_K = 32;
         const double target = 1e-3;  // relative standard error
         std::ofstream csv("benchmarks/results/control_variate.csv");
         csv << "method,N,M_paths,price_plain,se_plain,price_cv,se_cv,beta,variance_reduction,"
@@ -109,7 +117,7 @@ int main() {
                "time_to_target_plain_s,time_to_target_cv_s\n";
         std::cout << "\n── (b) control variate (M=" << M << ", target relative SE "
                   << target * 100 << "%) ──\n";
-        for (int N : {N_SMALL, N_LARGE}) {
+        for (int N : quick ? std::vector<int>{N_SMALL} : std::vector<int>{N_SMALL, N_LARGE}) {
             struct Row { std::string name; double t_plain_mc; CVResult cv; };
             std::vector<Row> rows;
             rows.push_back({ "cholesky", cholesky::price_timed(N, M).t_mc, cholesky::price_cv(N, M) });

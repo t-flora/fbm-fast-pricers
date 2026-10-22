@@ -10,6 +10,9 @@ Each test targets a property that a past bug broke or would break:
   - at nu = 0 the European pricer reproduces Black-Scholes
   - the variogram calibration recovers known (H, nu), with time in years
   - the Python rSVD is close to the optimal truncation
+  - the Oxford-Man loader filters one symbol, keeps local dates, drops bad rows
+  - the variance-corrected low-rank sampler restores marginal variances and the price
+  - the pathwise vega matches per-path and central finite differences
 """
 
 import os
@@ -21,16 +24,21 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data"))
 
 import calibrate  # noqa: E402
+import greeks  # noqa: E402
 import params  # noqa: E402
 import validate_stability as stab  # noqa: E402
 from rfsv_model import (  # noqa: E402
     asian_cv_terms,
     bs_call_price,
     build_fgn_eigenvalues,
+    lowrank_factor,
+    lowrank_sampler,
     price_asian_call,
     price_asian_call_cv,
     price_european_call,
+    residual_sd,
     simulate_log_vol_paths,
+    simulate_log_vol_paths_lowrank,
 )
 
 
@@ -115,3 +123,134 @@ def test_control_variate_is_unbiased_and_effective():
     # Independent runs agree within the (much smaller) CV error
     other = price_asian_call_cv(seed=4, **kw)
     assert abs(res["price"] - other["price"]) < 4 * np.hypot(res["se"], other["se"])
+
+
+def test_control_variate_vector_strikes_match_scalar():
+    # An array of strikes is priced from the same paths as the scalar calls
+    kw = dict(H=params.H, nu=params.NU, N=32, M=5_000, seed=6)
+    Ks = np.array([90.0, 100.0, 110.0])
+    vec = price_asian_call_cv(K=Ks, **kw)
+    for j, K in enumerate(Ks):
+        one = price_asian_call_cv(K=K, **kw)
+        for key in ("price", "se", "price_plain", "se_plain", "beta"):
+            assert vec[key][j] == pytest.approx(one[key], rel=1e-10), key
+
+
+def test_lowrank_corrected_marginal_variances():
+    N, k, H, nu = 64, 8, params.H, params.NU
+    C = stab.fbm_cov_matrix(N, H)
+    Lk = lowrank_factor(C, k)
+    d = residual_sd(C, Lk)
+    # Exact from the factor: diag(L_k L_k^T) + d^2 = diag(C)
+    marg = (Lk ** 2).sum(axis=1) + d ** 2
+    assert np.abs(marg / np.diag(C) - 1).max() < 1e-12
+    # Sampled: diag of the sample covariance matches nu^2 diag(C) within MC error,
+    # while the plain rank-k paths visibly miss variance
+    M = 100_000
+    tol = 6 * np.sqrt(2 / M)                    # ~6 SE of a relative variance estimate
+    corr = simulate_log_vol_paths_lowrank(N, M, H, nu, 1.0 / N, k, seed=11, corrected=True)
+    plain = simulate_log_vol_paths_lowrank(N, M, H, nu, 1.0 / N, k, seed=11)
+    target = nu ** 2 * np.diag(C)
+    assert np.abs((corr ** 2).mean(axis=0) / target - 1).max() < tol
+    assert ((plain ** 2).mean(axis=0) / target).min() < 1 - 5 * tol
+    # The correction draws come after z, so it leaves the rank-k part unchanged
+    resid = (corr - plain) / nu
+    assert np.abs(resid.std(axis=0) / np.maximum(d, 1e-300) - 1).max() < tol
+
+
+def test_lowrank_variance_correction_fixes_price():
+    # Mirrors test_lowrank_variance_correction in tests/test_samplers.cpp
+    N, k, M, H, nu = 64, 8, 100_000, params.H, params.NU
+    kw = dict(H=H, nu=nu, K=100.0, N=N, M=M)
+    exact = price_asian_call_cv(seed=31, **kw)
+    corr = price_asian_call_cv(seed=32, sampler=lowrank_sampler(N, H, nu, 1.0 / N, k, True), **kw)
+    plain = price_asian_call_cv(seed=33, sampler=lowrank_sampler(N, H, nu, 1.0 / N, k), **kw)
+    tol = 4 * np.hypot(exact["se"], corr["se"])
+    assert abs(corr["price"] - exact["price"]) < tol
+    # Negative control: the uncorrected sampler's bias is detectable at this precision
+    assert abs(plain["price"] - exact["price"]) > tol
+
+
+# Long format of the published Oxford-Man file: unnamed date column with the exchange's
+# UTC offset (which changes with DST), indices stacked, rows not grouped by date
+OXFORD_MAN_CSV = """\
+,Symbol,rv5,rv10,bv,rk_parzen,open_time
+2000-01-04 00:00:00+00:00,.FTSE,1.1e-04,1.2e-04,1.0e-04,1.3e-04,80000
+2000-01-05 00:00:00-05:00,.SPX,2.5e-04,2.6e-04,2.4e-04,2.7e-04,93000
+2000-01-04 00:00:00+09:00,.N225,9.0e-05,9.1e-05,8.9e-05,9.2e-05,90000
+2000-01-03 00:00:00-05:00,.SPX,1.5e-04,1.6e-04,1.4e-04,1.7e-04,93000
+2000-07-03 00:00:00-04:00,.SPX,3.5e-04,3.6e-04,3.4e-04,3.7e-04,93000
+2000-01-04 00:00:00-05:00,.SPX,,2.1e-04,1.9e-04,2.2e-04,93000
+2000-01-06 00:00:00-05:00,.SPX,0.0,3.1e-04,2.9e-04,3.2e-04,93000
+2000-07-03 00:00:00+01:00,.FTSE,4.5e-04,4.6e-04,4.4e-04,4.7e-04,80000
+"""
+
+
+@pytest.fixture
+def oxford_man_csv(tmp_path):
+    path = tmp_path / "oxfordmanrealizedvolatilityindices.csv"
+    path.write_text(OXFORD_MAN_CSV)
+    return str(path)
+
+
+def test_oxford_man_loader_filters_sorts_and_cleans(oxford_man_csv):
+    import pandas as pd
+    rv = calibrate.load_oxford_man(oxford_man_csv)  # defaults: rv5, .SPX
+    # One symbol, sorted by date; the missing (NaN) and zero rv5 rows are dropped
+    assert list(rv.index) == list(pd.to_datetime(["2000-01-03", "2000-01-05", "2000-07-03"]))
+    np.testing.assert_allclose(rv.values, [1.5e-4, 2.5e-4, 3.5e-4])
+    assert rv.index.is_monotonic_increasing and rv.index.tz is None
+
+    rv10 = calibrate.load_oxford_man(oxford_man_csv, rv_col="rv10")
+    np.testing.assert_allclose(rv10.values, [1.6e-4, 2.1e-4, 2.6e-4, 3.1e-4, 3.6e-4])
+
+
+def test_oxford_man_loader_keeps_local_calendar_dates(oxford_man_csv):
+    import pandas as pd
+    # Local midnight east of Greenwich is the previous day in UTC; the date must not move
+    n225 = calibrate.load_oxford_man(oxford_man_csv, symbol=".N225")
+    assert list(n225.index) == [pd.Timestamp("2000-01-04")]
+    ftse = calibrate.load_oxford_man(oxford_man_csv, symbol=".FTSE")
+    assert list(ftse.index) == list(pd.to_datetime(["2000-01-04", "2000-07-03"]))
+    np.testing.assert_allclose(ftse.values, [1.1e-4, 4.5e-4])
+
+
+def test_oxford_man_loader_errors(oxford_man_csv):
+    with pytest.raises(ValueError, match=r"Symbol '\.DJI' not found.*\.FTSE.*\.N225.*\.SPX"):
+        calibrate.load_oxford_man(oxford_man_csv, symbol=".DJI")
+    with pytest.raises(ValueError, match=r"Column 'rv1' not found.*rv5.*rv10"):
+        calibrate.load_oxford_man(oxford_man_csv, rv_col="rv1")
+
+
+def test_oxford_man_loader_single_index_file(tmp_path):
+    # Older single-index exports have no Symbol column; the loader must still work
+    path = tmp_path / "spx.csv"
+    path.write_text(",rv5,bv\n2000-01-04 00:00:00-05:00,2e-4,1e-4\n"
+                    "2000-01-03 00:00:00-05:00,1e-4,1e-4\n")
+    rv = calibrate.load_oxford_man(str(path), symbol=".IGNORED")
+    np.testing.assert_allclose(rv.values, [1e-4, 2e-4])
+
+
+def test_pathwise_derivatives_match_per_path_finite_differences():
+    # Same paths and shocks: away from the kinks A = K and G = K, the per-path pathwise
+    # derivatives of V and of the control C = Y - E[Y|sigma] equal their finite differences
+    N, M, nu, h, dt = 32, 2_000, params.NU, 1e-6, 1.0 / 32
+    X = simulate_log_vol_paths(N, M, params.H, 1.0, dt, seed=12)
+    dV, dC = greeks.pathwise_vega_terms(X, nu, params.MU0, 100.0, 0.0, dt, 100.0, seed=12)
+    up = asian_cv_terms(params.MU0 + (nu + h) * X, 100.0, 0.0, dt, 100.0, seed=12)
+    dn = asian_cv_terms(params.MU0 + (nu - h) * X, 100.0, 0.0, dt, 100.0, seed=12)
+    fd_V = (up[0] - dn[0]) / (2 * h)
+    fd_C = ((up[1] - up[2]) - (dn[1] - dn[2])) / (2 * h)
+    for pw, fd in [(dV, fd_V), (dC, fd_C)]:
+        ok = np.abs(pw - fd) < 1e-5 * (1 + np.abs(fd))
+        assert ok.mean() > 0.99
+
+
+def test_pathwise_vega_agrees_with_central_fd():
+    N, M = 32, 20_000
+    pw = greeks.pathwise_vega(N, M, seed=5)
+    fd = greeks.fd_greek("nu", 0.01, N, M, seed=5)
+    for name in ("plain", "cv"):
+        assert abs(pw[name][0] - fd[name][0]) < 4 * np.hypot(pw[name][1], fd[name][1]), name
+    # The differentiated control variate reduces the pathwise variance
+    assert pw["cv"][1] < pw["plain"][1]

@@ -97,9 +97,13 @@ def plot_time_vs_N(df: pd.DataFrame, out_path: str):
         c, alpha, r2 = fit_power_law(Ns, times)
         fit_results[method] = (c, alpha, r2)
 
-        # Data points
+        # Data points, with the interquartile range of the repeats when recorded
         ax.loglog(Ns, times, marker=style["marker"], color=style["color"],
                   label=style["label"], linewidth=2, markersize=8)
+        if {"wall_time_q1_s", "wall_time_q3_s"} <= set(sub.columns):
+            yerr = [times - sub["wall_time_q1_s"].values, sub["wall_time_q3_s"].values - times]
+            ax.errorbar(Ns, times, yerr=yerr, fmt="none", ecolor=style["color"],
+                        elinewidth=1.2, capsize=3)
         # Fitted dashed line — fold R² into the legend label
         ax.loglog(N_range, c * N_range ** alpha, linestyle="--",
                   color=style["color"], alpha=0.65, linewidth=1.2,

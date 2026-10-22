@@ -19,6 +19,9 @@
 \usepackage{mathtools}
 \usepackage{graphicx}
 \graphicspath{{../plots/figures/}}
+% Lets TeX stretch interword space a little rather than overrun the margin at long
+% unbreakable code names (\texttt{...})
+\setlength{\emergencystretch}{2em}
 
 \title{Fast Monte Carlo Pricing of Asian Options under Rough Fractional Stochastic Volatility}
 
@@ -47,11 +50,11 @@ path, exploiting low-rank structure).  We show that the circulant embedding is e
 for every $H \leq \nicefrac{1}{2}$, with smallest eigenvalue
 $\Delta t^{2H}(N^{2H} - (N-1)^{2H})$ in closed form.  Over $N$ from 64 to 4000, the FFT
 and rSVD costs grow linearly in $N$, while the Cholesky exponent rises from about 1 to
-2.1 as the $N^2$ mat-vec takes over and its factor outgrows the cache.  The FFT method
-overtakes Cholesky at $N \approx 250$ and is $7.6\times$ faster at $N = 4000$; drawing
+2.3 as the $N^2$ mat-vec takes over and its factor outgrows the cache.  The FFT method
+overtakes Cholesky at $N \approx 250$ and is $6.7\times$ faster at $N = 4000$; drawing
 two independent paths from each inverse transform was essential, since random number
 generation, not the transform, dominates its per-path cost.  The rank-32 rSVD method is
-$10\times$ faster than Cholesky at $N = 4000$ but underprices by $4$--$8\%$ at every
+$9\times$ faster than Cholesky at $N = 4000$ but underprices by $4$--$8\%$ at every
 rank tested.  That bias follows the fraction of path variance the truncation discards
 ($13\%$ even at $k = 128$), which the usual Frobenius error ($1.2\%$) badly understates.
 A variance-matched comparison shows that about 70\% of the rough-volatility premium on
@@ -79,9 +82,10 @@ factor of 26--29 for every sampler.
 \section*{Reproducibility}
 All source code, benchmark scripts, and plotting code are available at
 \url{https://github.com/t-flora/fbm-fast-pricers}.  Results can be reproduced
-end-to-end by running \texttt{./run\_pipeline.sh} from the project root.  A manifest
-recording the git commit, parameters, and wall time is written to
-\texttt{plots/runs/\textit{TIMESTAMP}/manifest.txt} for each run.
+end-to-end by running \texttt{./run\_pipeline.sh} from the project root
+(\texttt{--fast} gives a smoke test in a few minutes).  Each run writes a manifest
+recording the git commit, parameters, and wall time to
+\texttt{plots/runs/\textit{TIMESTAMP}/\allowbreak manifest.txt}.
 
 \section*{Acknowledgements}
 Portions of this report were drafted and edited with the assistance of Claude Sonnet 4.6

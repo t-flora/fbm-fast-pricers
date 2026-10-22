@@ -77,19 +77,27 @@ def load_oxford_man(filepath: str, rv_col: str = "rv5", symbol: str = ".SPX") ->
     The published CSV is in long format: one row per (date, Symbol), with all
     ~30 indices stacked.  It must be filtered to a single Symbol, otherwise the
     variogram would difference across unrelated indices.
+
+    The first (unnamed) column holds local midnight with the exchange's UTC offset,
+    e.g. "2000-01-03 00:00:00+01:00".  The index of the result is that local calendar
+    date (tz-naive): converting to UTC would move every date east of Greenwich back to
+    the previous day.  Missing and non-positive values are dropped, since the variogram
+    takes log(rv).
     """
     df = pd.read_csv(filepath, index_col=0)
-    df.index = pd.to_datetime(df.index, utc=True)
     if "Symbol" in df.columns:
         symbols = sorted(df["Symbol"].unique())
         if symbol not in symbols:
             raise ValueError(f"Symbol '{symbol}' not found. Available: {symbols}")
         df = df[df["Symbol"] == symbol]
+    # Wall-clock date in the exchange's own time zone (offsets change with DST)
+    df.index = pd.DatetimeIndex([pd.Timestamp(s).tz_localize(None) for s in df.index])
     df = df.sort_index()
     if rv_col not in df.columns:
         available = [c for c in df.columns if "rv" in c.lower()]
         raise ValueError(f"Column '{rv_col}' not found. Available RV columns: {available}")
-    return df[rv_col].dropna()
+    rv = df[rv_col].dropna()
+    return rv[rv > 0]
 
 
 def fit_variogram(log_vol: np.ndarray, step_years: float,

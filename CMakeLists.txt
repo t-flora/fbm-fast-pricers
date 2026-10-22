@@ -14,6 +14,8 @@ find_package(Eigen3 REQUIRED NO_MODULE)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFTW3 REQUIRED fftw3)
 link_directories(${FFTW3_LIBRARY_DIRS})
+find_package(Threads REQUIRED)  # std::thread in the batched pricers (common/batched_mc.hpp)
+link_libraries(Threads::Threads)
 
 # All targets include src/ so headers are found as "common/params.hpp" etc.
 include_directories(src)
@@ -25,7 +27,7 @@ target_link_libraries(cholesky_pricer PRIVATE Eigen3::Eigen)
 # ── FFT pricer ───────────────────────────────────────────────────────────────
 add_executable(fft_pricer src/fft/fft_pricer.cpp)
 target_include_directories(fft_pricer PRIVATE ${FFTW3_INCLUDE_DIRS})
-target_link_libraries(fft_pricer PRIVATE ${FFTW3_LIBRARIES})
+target_link_libraries(fft_pricer PRIVATE Eigen3::Eigen ${FFTW3_LIBRARIES})
 
 # ── rSVD pricer ──────────────────────────────────────────────────────────────
 add_executable(rsvd_pricer src/rsvd/rsvd_pricer.cpp)
@@ -40,6 +42,11 @@ target_link_libraries(benchmark PRIVATE Eigen3::Eigen ${FFTW3_LIBRARIES})
 add_executable(extensions benchmarks/extensions.cpp)
 target_include_directories(extensions PRIVATE ${FFTW3_INCLUDE_DIRS})
 target_link_libraries(extensions PRIVATE Eigen3::Eigen ${FFTW3_LIBRARIES})
+
+# ── Performance benchmark: batched sampling, fast generator, thread scaling ───
+add_executable(performance benchmarks/performance.cpp)
+target_include_directories(performance PRIVATE ${FFTW3_INCLUDE_DIRS})
+target_link_libraries(performance PRIVATE Eigen3::Eigen ${FFTW3_LIBRARIES})
 
 # ── Tests (ctest --test-dir build) ───────────────────────────────────────────
 enable_testing()

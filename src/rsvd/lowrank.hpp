@@ -11,7 +11,9 @@
 // Construction cost: O(N^2*k) via power-iteration rSVD.
 // Per-path cost: O(N*k) vs O(N^2) for dense Cholesky.
 #include <Eigen/Dense>
+#include <algorithm>
 #include <chrono>
+#include <memory>
 #include <vector>
 #include <cmath>
 #include "common/params.hpp"
@@ -20,6 +22,7 @@
 #include "common/rng.hpp"
 #include "rsvd/rsvd.hpp"
 #include "common/control_variate.hpp"
+#include "common/batched_mc.hpp"
 
 namespace lowrank {
 
@@ -159,6 +162,44 @@ inline LowRankFreedTimed price_freed_timed(int N, int M_paths, int rank_k = 16, 
     double p = mc_price(Lk, M_paths, seed);
     double t_mc = std::chrono::duration<double>(Clock::now() - t1).count();
     return { p, t_construct, t_mc };
+}
+
+// Batched worker (common/batched_mc.hpp): one N x k by k x B product L_k Z per block.
+// Plain (uncorrected) sampler; C is not kept, only L_k.
+class BatchWorker {
+public:
+    BatchWorker(const Eigen::MatrixXd& Lk, int batch) : Lk_(Lk), Z_(Lk.cols(), batch) {}
+
+    template <class Src>
+    void log_vol(Src& src, int n, Eigen::MatrixXd& LV) {
+        src.fill(Z_.data(), Lk_.cols() * n);
+        if (n == 1)
+            LV.col(0).noalias() = Lk_ * Z_.col(0);
+        else
+            LV.leftCols(n).noalias() = Lk_ * Z_.leftCols(n);
+        LV.leftCols(n) *= params::nu;
+    }
+
+private:
+    const Eigen::MatrixXd& Lk_;
+    Eigen::MatrixXd Z_;
+};
+
+inline batched::Result price_batched(int N, int M_paths, int rank_k = 16,
+                                     const batched::Config& cfg = {}, unsigned seed = 42) {
+    using Clock = std::chrono::high_resolution_clock;
+    auto t0 = Clock::now();
+    Eigen::MatrixXd Lk;
+    {
+        Eigen::MatrixXd C = build_fbm_cov_matrix(N, params::H, params::T);
+        Lk = lowrank_factor(C, rank_k, seed);
+    }
+    double t_construct = std::chrono::duration<double>(Clock::now() - t0).count();
+    batched::Result res = batched::run(N, M_paths, seed, cfg, [&] {
+        return std::make_unique<BatchWorker>(Lk, std::max(1, cfg.batch));
+    });
+    res.t_construct = t_construct;
+    return res;
 }
 
 } // namespace lowrank

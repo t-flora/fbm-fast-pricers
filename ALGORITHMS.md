@@ -99,11 +99,11 @@ the vol process). `log_vol_to_prices` steps $S_i = S_{i-1} \cdot \exp\!\bigl((r 
 | Phase | Cost | $N=252$ | $N=1000$ |
 |-------|------|---------|----------|
 | Factorize $C$ | $O(N^3)$ | ~1.2ms | ~24ms |
-| MC loop ($M$ paths) | $O(MN^2)$ | ~175ms | ~1130ms |
+| MC loop ($M$ paths) | $O(MN^2)$ | ~175ms | ~1190ms |
 
 The factorization cost is dominated by the per-path cost at $M = 10{,}000$.
-A single power law fits poorly ($\alpha \approx 1.52$, $R^2 = 0.978$ over $N = 64$ to 4000) because the
-curve bends. The local exponent rises from about 1.0 at small $N$ to 2.1 above $N = 1000$. At small
+A single power law fits poorly ($\alpha \approx 1.48$, $R^2 = 0.983$ over $N = 64$ to 4000) because the
+curve bends. The local exponent rises from about 1.0 at small $N$ to 2.3 between $N = 2000$ and 4000. At small
 $N$ each MC iteration is dominated by $O(N)$ work ($N$ Gaussian draws, $2N$ exponentials, $N$ payoff
 steps). Once $N^2$ takes over, the exponent slightly exceeds 2 because `L` spills out of the 16 MB
 cache at $N \approx 1450$ and the loop becomes memory-bandwidth bound.
@@ -238,7 +238,7 @@ reconstructs the fBM path $W_{t_n} = \sum_{j \leq n} \delta W_j$. Then $\log\sig
 | Per-path IFFT | $O(N \log N)$ |
 | Full MC | $O(MN \log N)$ |
 
-At $N = 1000$, FFT is $1.6\times$ faster than Cholesky (0.71 s vs 1.15 s), and $7.6\times$ at
+At $N = 1000$, FFT is $1.7\times$ faster than Cholesky (0.71 s vs 1.22 s), and $6.7\times$ at
 $N = 4000$. That is less than the arithmetic suggests at moderate $N$: a size-$2N$ complex FFT is
 about $10^5$ flops against $N^2 = 10^6$ for the triangular mat-vec. Two reasons, both Amdahl's Law:
 
@@ -253,7 +253,7 @@ imaginary parts of the IFFT output are *independent* fGn samples (their cross-co
 vanishes because $\lambda_j = \lambda_{2N-j}$), so the pricer takes two paths per transform. That
 cut the $N = 1000$ run from 1.04 s to 0.71 s.
 The fitted exponent is $\alpha \approx 1.02$, and the per-path cost per time step is flat
-(67–73 ns) from $N = 64$ to 4000, so the $\log N$ factor never becomes visible.
+(70–76 ns) from $N = 64$ to 4000, so the $\log N$ factor never becomes visible.
 
 **Memory**: during the MC loop the sampler holds the $2N$ scale factors and two length-$2N$
 complex buffers for the inverse FFT, not an $N \times N$ matrix. At $N = 1000$ that is 80 KB
@@ -498,6 +498,56 @@ Using a separate pilot keeps the estimate exactly unbiased: $\beta$ does not dep
 
 ---
 
+## Performance: Batching, a Faster Generator, Threads
+
+Also opt-in: `price_batched()` in each sampler, driven by `src/common/batched_mc.hpp`. Results are in the README and Section 7 of the report.
+
+### Why batch: reuse each element of $L$
+
+The per-path Cholesky loop computes one mat-vec $Lz$ per path. Each element of $L$ is read from memory, used in one multiply-add, and not touched again until the next path. That is 2 flops per 8 bytes, so once $L$ is larger than the cache the loop runs at the speed of memory, not of the arithmetic units. Stacking $B$ paths into an $N \times B$ matrix $Z$ turns the work into one matrix-matrix product $LZ$: Eigen's blocked product loads a tile of $L$ into cache and uses it for all $B$ columns, so each element is read once per *block*.
+
+```cpp
+// cholesky::BatchWorker::log_vol
+src.fill(Z_.data(), N * n);                  // N x n standard normals
+auto L = F_.triangularView<Eigen::Lower>();
+if (n == 1)
+    LV.col(0).noalias() = L * Z_.col(0);     // unbatched: triangular mat-vec
+else
+    LV.leftCols(n).noalias() = L * Z_.leftCols(n);   // batched: triangular mat-mat (TRMM)
+LV.leftCols(n) *= params::nu;
+```
+
+The low-rank worker does the same with `Lk_ * Z_` (an $N \times k$ by $k \times B$ GEMM). The FFT worker fills $\lceil B/2 \rceil$ length-$2N$ inputs and runs them through one `fftw_plan_many_dft` plan. The real and imaginary part of each transform are still two paths.
+
+### Blocks are also the unit of parallel work
+
+```cpp
+for (int b; (b = next_block.fetch_add(1)) < n_blocks;) {
+    Src src(seed, b);              // block b's own random stream
+    worker.log_vol(src, n, LV);    // volatility paths, then the price shocks
+    ...
+    sums[b] = s;                   // per-block sums, reduced in block order at the end
+}
+```
+
+Threads take blocks from an atomic counter. Two details make the result reproducible. Each block's random stream depends only on `(seed, b)`, never on which thread runs it. The block sums are added in block order after all threads join, so floating-point rounding does not depend on scheduling either. The price is therefore bitwise the same for any thread count; the test suite compares 1 thread against 3 and 4. It does change with $B$, because blocks then own different paths. Each thread gets its own worker (its own $Z$ buffer, and for the FFT its own plan), created before the threads start because FFTW's planner is not thread-safe.
+
+### The fast generator (`src/common/fast_rng.hpp`)
+
+`std::normal_distribution` on libc++ uses the polar method: draw two uniforms, reject about 21% of pairs, then take a log and a square root. That costs about 26 ns per normal on the M2. The replacement has two parts:
+
+- **xoshiro256++** (Blackman and Vigna) produces 64 random bits from four XORs, two shifts and two rotations.
+- **The ziggurat** (Marsaglia and Tsang) covers the normal density with 256 horizontal strips of equal area. One draw picks a strip from 8 bits and a position from 52 more. About 99% of the time the point lands in the part of the strip that lies entirely under the curve, and the answer is a single multiply:
+
+```cpp
+double x = static_cast<double>(mag) * w_[layer];
+if (mag < k_[layer]) return negative ? -x : x;   // ~99% of draws end here
+```
+
+The rare remaining cases test the curved edge with one `exp`, or sample the tail beyond $R = 3.654$ with Marsaglia's exponential method. The result costs about 3 ns per normal. The tables are built at start-up from $R$ alone (the common strip area follows from it). The tests check the moments, the CDF at seven points and the tail mass on $10^7$ draws, and pin the generator's reference outputs and a fixed-seed price.
+
+---
+
 ## Comparison Summary
 
 | | Cholesky | FFT | Low-Rank rSVD ($k=32$) |
@@ -509,7 +559,7 @@ Using a separate pilot keeps the estimate exactly unbiased: $\beta$ does not dep
 | **Exact?** | Yes | Yes (all circulant eigenvalues verified $> 0$) | No (truncation error) |
 | **Key paper** | — | Wood & Chan 1994 | Halko et al. 2011 |
 | **Bottleneck at $N=1000$** | $N^2$ mat-vec per path | Shared $O(N)$ price-path work | Shared $O(N)$ price-path work |
-| **Fitted $\alpha$** (N = 64–4000) | 1.52 global; local 1.0 → 2.1 | 1.02 | 1.02 |
+| **Fitted $\alpha$** (N = 64–4000) | 1.48 global; local 1.0 → 2.3 | 1.00 | 1.02 |
 
 The FFT method wins on memory ($O(N)$ vs $O(N^2)$) and is exact on the grid, so it is the recommended
 method for production use. The global rSVD method is valuable pedagogically because it
@@ -533,8 +583,11 @@ hard limits — no constant-factor optimization can fix cubic growth.
 **Memory-bandwidth ceiling at larger $N$.** Each path re-reads all of $L$. Up to $N = 1000$
 the 7.6 MB matrix fits in the M2's 16 MB L2. Beyond $N \approx 1450$ it no longer fits, and
 every path then streams $8N^2$ bytes from DRAM, so the loop becomes bandwidth-bound and a
-faster core helps little. The benchmark's `est_bandwidth_GBs` column (up to 50 GB/s) is an
+faster core helps little. The benchmark's `est_bandwidth_GBs` column (up to 39 GB/s) is an
 effective streaming rate, not a DRAM measurement, so it does not show this regime directly.
+The thread-scaling benchmark does: at $N = 4000$ the per-path loop gains at most $1.8\times$
+from extra threads, while the batched version (which reads $L$ once per 64 paths) gains
+$3.1\times$ on four cores.
 
 **Further directions.** Quasi-Monte Carlo (QMC) methods — replacing pseudo-random draws
 with low-discrepancy Sobol or Halton sequences — can reduce MC standard error from
